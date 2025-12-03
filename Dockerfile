@@ -27,6 +27,6 @@ COPY my_revision_helper ./my_revision_helper
 ENV PORT=8000
 EXPOSE $PORT
 
-# Start the server
-CMD uvicorn my_revision_helper.api:app --host 0.0.0.0 --port $PORT
+# Start the server (use shell form to expand $PORT)
+CMD sh -c "uvicorn my_revision_helper.api:app --host 0.0.0.0 --port ${PORT:-8000}"
 
