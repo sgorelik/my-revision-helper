@@ -1,5 +1,26 @@
 import { useState } from 'react'
-import './App.css'
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  Button,
+  Input,
+  Textarea,
+  Chip,
+  Table,
+  TableHeader,
+  TableColumn,
+  TableBody,
+  TableRow,
+  TableCell,
+} from '@heroui/react'
+import {
+  DocumentTextIcon,
+  PhotoIcon,
+  CheckCircleIcon,
+  XCircleIcon,
+  AcademicCapIcon,
+} from '@heroicons/react/24/outline'
 
 type RevisionConfig = {
   id?: string
@@ -227,252 +248,372 @@ function App() {
   }
 
   return (
-    <div style={{ maxWidth: 800, margin: '0 auto', padding: '1.5rem' }}>
-      <h1>My Revision Helper</h1>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      <div className="max-w-4xl mx-auto px-4 py-8">
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-gray-900 mb-2 flex items-center justify-center gap-2">
+            <AcademicCapIcon className="w-5 h-5 text-indigo-600" />
+            My Revision Helper
+          </h1>
+          <p className="text-gray-600">AI-powered study companion for effective learning</p>
+        </div>
 
       {knownRevisions.length > 0 && !revision && (
-        <section style={{ marginBottom: '2rem' }}>
-          <h2>Existing Revisions</h2>
-          <ul style={{ listStyle: 'none', padding: 0 }}>
-            {knownRevisions.map((r) => (
-              <li
-                key={r.id}
-                style={{
-                  padding: '0.75rem',
-                  marginBottom: '0.5rem',
-                  border: '1px solid #ddd',
-                  borderRadius: '4px',
-                }}
-              >
-                <div>
-                  <strong>{r.name}</strong> ({r.subject})
-                </div>
-                {r.uploadedFiles && r.uploadedFiles.length > 0 && (
-                  <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
-                    📎 Files: {r.uploadedFiles.join(', ')}
-                  </div>
-                )}
-                {r.extractedTextPreview && (
-                  <div
-                    style={{
-                      fontSize: '0.85rem',
-                      color: '#666',
-                      marginTop: '0.25rem',
-                      fontStyle: 'italic',
-                    }}
-                  >
-                    "{r.extractedTextPreview}"
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
+        <Card className="mb-6 rounded-xl border-2 border-purple-100 shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-t-xl">
+            <h2 className="text-2xl font-semibold text-purple-900">Existing Revisions</h2>
+          </CardHeader>
+          <CardBody>
+            <div className="space-y-3">
+              {knownRevisions.map((r) => (
+                <Card key={r.id} className="border-2 border-blue-200 hover:shadow-lg transition-all hover:border-blue-400 rounded-lg bg-gradient-to-r from-blue-50 to-cyan-50">
+                  <CardBody>
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-lg text-gray-900">{r.name}</h3>
+                        <Chip size="sm" variant="flat" color="secondary" className="mt-1 rounded-full">
+                          {r.subject}
+                        </Chip>
+                        {r.uploadedFiles && r.uploadedFiles.length > 0 && (
+                          <div className="flex items-center gap-1 mt-2 text-sm text-gray-600">
+                            <PhotoIcon className="w-3 h-3 text-blue-600" />
+                            <span>Files: {r.uploadedFiles.join(', ')}</span>
+                          </div>
+                        )}
+                        {r.extractedTextPreview && (
+                          <p className="text-sm text-gray-500 italic mt-2 line-clamp-2">
+                            "{r.extractedTextPreview}"
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </CardBody>
+                </Card>
+              ))}
+            </div>
+          </CardBody>
+        </Card>
       )}
 
       {!revision && (
-        <section style={{ marginBottom: '2rem' }}>
-          <h2>Set Up a Revision</h2>
-          <form onSubmit={handleCreateRevision} style={{ display: 'grid', gap: '0.75rem' }}>
-            <label>
-              Revision Name
-              <input
-                type="text"
+        <Card className="mb-6 rounded-xl border-2 border-indigo-100 shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-indigo-50 to-blue-50 rounded-t-xl">
+            <h2 className="text-2xl font-semibold flex items-center gap-2 text-indigo-900">
+              <DocumentTextIcon className="w-4 h-4 text-indigo-600" />
+              Set Up a Revision
+            </h2>
+          </CardHeader>
+          <CardBody>
+            <form onSubmit={handleCreateRevision} className="space-y-4">
+              <Input
+                label="Revision Name"
+                placeholder="e.g., Math Test Prep"
                 value={form.name}
                 onChange={(e) => onChangeForm('name', e.target.value)}
                 required
+                variant="bordered"
+                classNames={{
+                  input: "rounded-lg",
+                  inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
+                }}
               />
-            </label>
-            <label>
-              Subject
-              <input
-                type="text"
+              <Input
+                label="Subject"
+                placeholder="e.g., Mathematics"
                 value={form.subject}
                 onChange={(e) => onChangeForm('subject', e.target.value)}
                 required
-              />
-            </label>
-            <label>
-              Topic Areas (comma-separated)
-              <input
-                type="text"
-                value={form.topicsInput}
-                onChange={(e) => onChangeForm('topicsInput', e.target.value)}
-                placeholder="Fractions, Algebra, ..."
-              />
-            </label>
-            <label>
-              Description
-              <textarea
-                value={form.description}
-                onChange={(e) => onChangeForm('description', e.target.value)}
-                placeholder="Describe what to study, or upload images with text below"
-              />
-            </label>
-            <label>
-              Upload Images (JPEG, PNG) - Text will be extracted automatically
-              <input
-                type="file"
-                accept="image/jpeg,image/jpg,image/png,image/gif,image/webp"
-                multiple
-                onChange={(e) => {
-                  const files = Array.from(e.target.files || [])
-                  // Validate file sizes (10MB max per file)
-                  const MAX_SIZE = 10 * 1024 * 1024 // 10MB
-                  const validFiles: File[] = []
-                  const invalidFiles: string[] = []
-                  
-                  files.forEach((file) => {
-                    if (file.size > MAX_SIZE) {
-                      invalidFiles.push(`${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB)`)
-                    } else {
-                      validFiles.push(file)
-                    }
-                  })
-                  
-                  setSelectedFiles(validFiles)
-                  if (invalidFiles.length > 0) {
-                    setError(`Files too large (max 10MB): ${invalidFiles.join(', ')}`)
-                  }
+                variant="bordered"
+                classNames={{
+                  input: "rounded-lg",
+                  inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
                 }}
               />
-              {selectedFiles.length > 0 && (
-                <div style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
-                  Selected {selectedFiles.length} file(s): {selectedFiles.map(f => `${f.name} (${(f.size / 1024).toFixed(0)}KB)`).join(', ')}
+              <Input
+                label="Topic Areas"
+                placeholder="Fractions, Algebra, Geometry (comma-separated)"
+                value={form.topicsInput}
+                onChange={(e) => onChangeForm('topicsInput', e.target.value)}
+                variant="bordered"
+                description="Separate multiple topics with commas"
+                classNames={{
+                  input: "rounded-lg",
+                  inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
+                }}
+              />
+              <Textarea
+                label="Description"
+                placeholder="Describe what to study, or upload images with text below"
+                value={form.description}
+                onChange={(e) => onChangeForm('description', e.target.value)}
+                variant="bordered"
+                minRows={3}
+                classNames={{
+                  input: "rounded-lg",
+                  inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
+                }}
+              />
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <PhotoIcon className="w-3.5 h-3.5 inline mr-1 text-pink-600" />
+                  Upload Images (JPEG, PNG) - Text will be extracted automatically
+                </label>
+                <input
+                  type="file"
+                  accept="image/jpeg,image/jpg,image/png,image/gif,image/webp"
+                  multiple
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || [])
+                    const MAX_SIZE = 10 * 1024 * 1024 // 10MB
+                    const validFiles: File[] = []
+                    const invalidFiles: string[] = []
+                    
+                    files.forEach((file) => {
+                      if (file.size > MAX_SIZE) {
+                        invalidFiles.push(`${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB)`)
+                      } else {
+                        validFiles.push(file)
+                      }
+                    })
+                    
+                    setSelectedFiles(validFiles)
+                    if (invalidFiles.length > 0) {
+                      setError(`Files too large (max 10MB): ${invalidFiles.join(', ')}`)
+                    }
+                  }}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-pink-50 file:to-purple-50 file:text-pink-700 hover:file:from-pink-100 hover:file:to-purple-100 file:border-2 file:border-pink-200"
+                />
+                {selectedFiles.length > 0 && (
+                  <div className="mt-2 p-3 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border-2 border-green-200">
+                    <p className="text-sm text-green-800 font-medium">
+                      Selected {selectedFiles.length} file(s): {selectedFiles.map(f => `${f.name} (${(f.size / 1024).toFixed(0)}KB)`).join(', ')}
+                    </p>
+                  </div>
+                )}
+                <p className="text-xs text-gray-500 mt-1">Maximum file size: 10MB per file</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  type="number"
+                  label="Desired Number of Questions"
+                  min={1}
+                  value={String(form.desiredQuestionCount)}
+                  onChange={(e) =>
+                    onChangeForm('desiredQuestionCount', Number(e.target.value))
+                  }
+                  variant="bordered"
+                  classNames={{
+                    input: "rounded-lg",
+                    inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
+                  }}
+                />
+                <Input
+                  type="number"
+                  label="Accuracy Threshold (%)"
+                  min={0}
+                  max={100}
+                  value={String(form.accuracyThreshold)}
+                  onChange={(e) =>
+                    onChangeForm('accuracyThreshold', Number(e.target.value))
+                  }
+                  variant="bordered"
+                  classNames={{
+                    input: "rounded-lg",
+                    inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
+                  }}
+                />
+              </div>
+
+              {error && (
+                <div className="p-3 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-lg">
+                  <p className="text-sm text-red-800 font-medium">{error}</p>
                 </div>
               )}
-              <div style={{ fontSize: '0.8rem', color: '#999', marginTop: '0.25rem' }}>
-                Maximum file size: 10MB per file
-              </div>
-            </label>
-            <label>
-              Desired Number of Questions
-              <input
-                type="number"
-                min={1}
-                value={form.desiredQuestionCount}
-                onChange={(e) =>
-                  onChangeForm('desiredQuestionCount', Number(e.target.value))
-                }
-              />
-            </label>
-            <label>
-              Desired Accuracy Threshold (%)
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={form.accuracyThreshold}
-                onChange={(e) =>
-                  onChangeForm('accuracyThreshold', Number(e.target.value))
-                }
-              />
-            </label>
 
-            {error && <p style={{ color: 'red' }}>{error}</p>}
-
-            <button type="submit" disabled={isCreating}>
-              {isProcessingFiles
-                ? 'Processing images and creating...'
-                : isCreating
-                ? 'Creating...'
-                : 'Create Revision'}
-            </button>
-          </form>
-        </section>
+              <button
+                type="submit"
+                disabled={isCreating || isProcessingFiles}
+                className="w-full rounded-lg font-semibold bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg text-white py-3 px-4 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                {isProcessingFiles
+                  ? 'Processing images and creating...'
+                  : isCreating
+                  ? 'Creating...'
+                  : 'Create Revision'}
+              </button>
+            </form>
+          </CardBody>
+        </Card>
       )}
 
       {revision && (
-        <section>
-          <h2>Run Revision</h2>
-          <p>
-            Revision: <strong>{revision.name}</strong> ({revision.subject})
-          </p>
-
-          {error && <p style={{ color: 'red' }}>{error}</p>}
-
-          {!summary && (
-            <>
-              {question ? (
-                <div style={{ marginTop: '1rem' }}>
-                  <h3>Question</h3>
-                  <p>{question.text}</p>
-                  <textarea
-                    value={answer}
-                    onChange={(e) => setAnswer(e.target.value)}
-                    rows={4}
-                    style={{ width: '100%' }}
-                  />
-                  <button
-                    onClick={handleSubmitAnswer}
-                    disabled={isSubmittingAnswer || !answer.trim()}
-                    style={{ marginTop: '0.5rem' }}
-                  >
-                    {isSubmittingAnswer ? 'Checking...' : 'Submit Answer'}
-                  </button>
-
-                  {lastResult && (
-                    <div style={{ marginTop: '1rem' }}>
-                      <p>
-                        Result:{' '}
-                        <strong
-                          style={{
-                            color: lastResult.isCorrect ? 'green' : 'red',
-                          }}
-                        >
-                          {lastResult.isCorrect ? 'Correct' : 'Incorrect'}
-                        </strong>
-                      </p>
-                      <p>
-                        Correct answer: <strong>{lastResult.correctAnswer}</strong>
-                      </p>
-                      {lastResult.explanation && (
-                        <p>Explanation: {lastResult.explanation}</p>
-                      )}
-                      <button onClick={handleNextQuestion} style={{ marginTop: '0.5rem' }}>
-                        Next Question
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p>No more questions. You can view your summary.</p>
-              )}
-
-              <button onClick={handleLoadSummary} style={{ marginTop: '1rem' }}>
-                View Summary
-              </button>
-            </>
-          )}
-
-          {summary && (
-            <div style={{ marginTop: '2rem' }}>
-              <h3>Summary</h3>
-              <p>Overall accuracy: {summary.overallAccuracy.toFixed(1)}%</p>
-              <table>
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>Your Answer</th>
-                    <th>Correct Answer</th>
-                    <th>Result</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {summary.questions.map((q, idx) => (
-                    <tr key={q.questionId}>
-                      <td>{idx + 1}</td>
-                      <td>{q.studentAnswer}</td>
-                      <td>{q.correctAnswer}</td>
-                      <td>{q.isCorrect ? 'Correct' : 'Incorrect'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <Card className="rounded-xl border-2 border-emerald-100 shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-emerald-50 to-teal-50 rounded-t-xl">
+            <div className="flex items-center justify-between w-full">
+              <div>
+                <h2 className="text-2xl font-semibold text-emerald-900">Run Revision</h2>
+                <p className="text-sm text-gray-700 mt-1">
+                  <strong className="text-emerald-800">{revision.name}</strong> • <span className="text-teal-700">{revision.subject}</span>
+                </p>
+              </div>
             </div>
-          )}
-        </section>
+          </CardHeader>
+          <CardBody>
+            {error && (
+              <div className="p-3 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-lg mb-4">
+                <p className="text-sm text-red-800 font-medium">{error}</p>
+              </div>
+            )}
+
+            {!summary && (
+              <>
+                {question ? (
+                  <div className="space-y-4">
+                    <Card className="bg-gradient-to-r from-indigo-50 to-blue-50 border-2 border-indigo-300 rounded-xl shadow-md">
+                      <CardBody>
+                        <h3 className="text-lg font-semibold mb-2 text-indigo-900">Question</h3>
+                        <p className="text-gray-700 text-lg">{question.text}</p>
+                      </CardBody>
+                    </Card>
+
+                    <Textarea
+                      label="Your Answer"
+                      placeholder="Type your answer here..."
+                      value={answer}
+                      onChange={(e) => setAnswer(e.target.value)}
+                      variant="bordered"
+                      minRows={4}
+                      classNames={{
+                        input: "rounded-lg",
+                        inputWrapper: "rounded-lg border-2 border-emerald-200 hover:border-emerald-400"
+                      }}
+                    />
+
+                    <Button
+                      onClick={handleSubmitAnswer}
+                      color="primary"
+                      size="lg"
+                      className="w-full rounded-lg font-semibold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-lg"
+                      isLoading={isSubmittingAnswer}
+                      disabled={isSubmittingAnswer || !answer.trim()}
+                    >
+                      {isSubmittingAnswer ? 'Checking...' : 'Submit Answer'}
+                    </Button>
+
+                    {lastResult && (
+                      <Card className={`border-2 rounded-xl shadow-md ${lastResult.isCorrect ? 'border-green-400 bg-gradient-to-r from-green-50 to-emerald-50' : 'border-red-400 bg-gradient-to-r from-red-50 to-rose-50'}`}>
+                        <CardBody>
+                          <div className="flex items-center gap-2 mb-3">
+                            {lastResult.isCorrect ? (
+                              <CheckCircleIcon className="w-4 h-4 text-green-600" />
+                            ) : (
+                              <XCircleIcon className="w-4 h-4 text-red-600" />
+                            )}
+                            <h4 className={`text-lg font-semibold ${lastResult.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
+                              {lastResult.isCorrect ? 'Correct!' : 'Incorrect'}
+                            </h4>
+                          </div>
+                          <div className="space-y-2">
+                            <p className="text-gray-700">
+                              <span className="font-medium">Correct answer:</span>{' '}
+                              <span className="font-semibold text-gray-900">{lastResult.correctAnswer}</span>
+                            </p>
+                            {lastResult.explanation && (
+                              <div className="mt-3 p-3 bg-white rounded-lg border-2 border-gray-200">
+                                <p className="text-sm text-gray-700">
+                                  <span className="font-medium">Explanation:</span> {lastResult.explanation}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                          <Button
+                            onClick={handleNextQuestion}
+                            color="primary"
+                            variant="flat"
+                            className="w-full mt-4 rounded-lg font-semibold bg-gradient-to-r from-blue-50 to-indigo-50 hover:from-blue-100 hover:to-indigo-100 border-2 border-blue-200 text-blue-700"
+                          >
+                            Next Question
+                          </Button>
+                        </CardBody>
+                      </Card>
+                    )}
+                  </div>
+                ) : (
+                  <Card className="bg-gradient-to-r from-gray-50 to-slate-50 border-2 border-gray-200 rounded-xl">
+                    <CardBody>
+                      <p className="text-gray-600 text-center py-4">
+                        No more questions. You can view your summary.
+                      </p>
+                      <Button
+                        onClick={handleLoadSummary}
+                        color="primary"
+                        size="lg"
+                        className="w-full rounded-lg font-semibold bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 shadow-lg"
+                      >
+                        View Summary
+                      </Button>
+                    </CardBody>
+                  </Card>
+                )}
+
+                {!question && (
+                  <Button
+                    onClick={handleLoadSummary}
+                    color="primary"
+                    size="lg"
+                    className="w-full mt-4 rounded-lg font-semibold bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 shadow-lg"
+                  >
+                    View Summary
+                  </Button>
+                )}
+              </>
+            )}
+
+            {summary && (
+              <div className="space-y-4">
+                <Card className="bg-gradient-to-r from-indigo-500 via-purple-600 to-pink-600 text-white rounded-xl shadow-xl border-2 border-purple-300">
+                  <CardBody>
+                    <h3 className="text-2xl font-bold mb-2">Summary</h3>
+                    <p className="text-3xl font-bold">
+                      Overall Accuracy: {summary.overallAccuracy.toFixed(1)}%
+                    </p>
+                  </CardBody>
+                </Card>
+
+                <Table aria-label="Answer summary">
+                  <TableHeader>
+                    <TableColumn>#</TableColumn>
+                    <TableColumn>Your Answer</TableColumn>
+                    <TableColumn>Correct Answer</TableColumn>
+                    <TableColumn>Result</TableColumn>
+                  </TableHeader>
+                  <TableBody>
+                    {summary.questions.map((q, idx) => (
+                      <TableRow key={q.questionId}>
+                        <TableCell>{idx + 1}</TableCell>
+                        <TableCell>{q.studentAnswer}</TableCell>
+                        <TableCell className="font-semibold">{q.correctAnswer}</TableCell>
+                        <TableCell>
+                          <Chip
+                            color={q.isCorrect ? 'success' : 'danger'}
+                            variant="flat"
+                            size="sm"
+                          >
+                            {q.isCorrect ? 'Correct' : 'Incorrect'}
+                          </Chip>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardBody>
+        </Card>
       )}
+      </div>
     </div>
   )
 }
