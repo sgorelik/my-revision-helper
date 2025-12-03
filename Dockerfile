@@ -25,8 +25,9 @@ COPY my_revision_helper ./my_revision_helper
 
 # Expose port (Railway sets PORT env var)
 ENV PORT=8000
-EXPOSE $PORT
+EXPOSE 8000
 
 # Start the server (use shell form to expand $PORT)
-CMD sh -c "uvicorn my_revision_helper.api:app --host 0.0.0.0 --port ${PORT:-8000}"
+# Railway will set PORT as an environment variable at runtime
+CMD ["sh", "-c", "uvicorn my_revision_helper.api:app --host 0.0.0.0 --port ${PORT:-8000}"]
 
