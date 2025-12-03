@@ -36,7 +36,9 @@ type RevisionRun = {
   status: string
 }
 
-const API_BASE = 'http://localhost:8000/api'
+// API base URL - uses environment variable if set, otherwise defaults to localhost for dev
+// When served from same domain (production), use relative path
+const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 async function createRevision(config: RevisionConfig): Promise<RevisionConfig> {
   const formData = new FormData()

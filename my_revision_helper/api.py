@@ -31,6 +31,8 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from temporalio.client import Client
 
@@ -129,12 +131,22 @@ class RevisionRun(BaseModel):
 
 app = FastAPI()
 
+# CORS configuration - can be set via ALLOWED_ORIGINS env var (comma-separated)
+# For Railway deployment, Railway will provide a domain like *.railway.app
+# You can also use "*" for development, but restrict in production!
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",") if origin.strip()]
+
+# Allow Railway domains by default if ALLOWED_ORIGINS not explicitly set
+if os.getenv("RAILWAY_PUBLIC_DOMAIN"):
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+    if railway_domain not in allowed_origins:
+        allowed_origins.append(f"https://{railway_domain}")
+        allowed_origins.append(f"http://{railway_domain}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ],
+    allow_origins=allowed_origins if "*" not in allowed_origins else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -528,3 +540,31 @@ async def get_summary(run_id: str):
         questions=answers,
         overallAccuracy=accuracy,
     )
+
+
+# Serve static files from frontend build (for production deployment)
+# This allows the FastAPI server to serve the React frontend
+# IMPORTANT: This must be added AFTER all API routes are defined
+frontend_build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+if os.path.exists(frontend_build_path):
+    # Mount static assets (JS, CSS, images)
+    assets_path = os.path.join(frontend_build_path, "assets")
+    if os.path.exists(assets_path):
+        app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+    
+    # Serve index.html for all non-API routes (catch-all must be last)
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """
+        Serve the React frontend for all non-API routes.
+        This catch-all route must be defined last so API routes take precedence.
+        """
+        # Don't serve frontend for API routes (shouldn't reach here if routes are defined correctly)
+        if full_path.startswith("api/"):
+            return {"error": "Not found"}
+        
+        # Serve index.html for all frontend routes (React Router handles client-side routing)
+        index_path = os.path.join(frontend_build_path, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"error": "Frontend not built"}

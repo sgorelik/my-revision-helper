@@ -35,7 +35,7 @@ htmlcov/
 # Node.js / Frontend
 node_modules/
 frontend/node_modules/
-frontend/dist/
+# frontend/dist/  # Uncomment this line if you want to build frontend in Railway instead
 frontend/.vite/
 frontend/.env.local
 frontend/.env.*.local

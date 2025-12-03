@@ -1,0 +1,20 @@
+# Files to ignore when deploying to Railway
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+.env
+.env.local
+node_modules/
+frontend/node_modules/
+.git/
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
