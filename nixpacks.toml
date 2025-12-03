@@ -1,16 +1,16 @@
 # Nixpacks configuration for Railway
-# Ensures both Node.js and Python are available
+# Railway auto-detects Python from requirements.txt
+# We just need to ensure Node.js is available for frontend build
 
-providers = ["node", "python"]
+providers = ["node"]
 
 [phases.setup]
-nixPkgs = ["nodejs-18_x", "python312"]
+nixPkgs = ["nodejs-18_x"]
 
 [phases.install]
 dependsOn = ["setup"]
 cmds = [
-  "cd frontend && npm install",
-  "pip install -r requirements.txt"
+  "cd frontend && npm install"
 ]
 
 [phases.build]
