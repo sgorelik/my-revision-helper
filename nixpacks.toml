@@ -1,0 +1,22 @@
+# Nixpacks configuration for Railway
+# Ensures both Node.js and Python are available
+
+[phases.setup]
+nixPkgs = ["nodejs-18_x", "python312"]
+
+[phases.install]
+dependsOn = ["setup"]
+cmds = [
+  "cd frontend && npm install",
+  "pip install -r requirements.txt"
+]
+
+[phases.build]
+dependsOn = ["install"]
+cmds = [
+  "cd frontend && npm run build"
+]
+
+[start]
+cmd = "uvicorn my_revision_helper.api:app --host 0.0.0.0 --port $PORT"
+
