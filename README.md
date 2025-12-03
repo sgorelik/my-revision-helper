@@ -160,6 +160,43 @@ my_revision_helper/
 
 ### Testing
 
+#### End-to-End (E2E) Smoke Tests
+
+We use [Playwright](https://playwright.dev/) for E2E smoke tests to ensure critical user flows work after UI changes.
+
+**Quick Start:**
+
+```bash
+# From the frontend directory
+cd frontend
+
+# Run all E2E tests (headless)
+npm run test:e2e
+
+# Run tests with interactive UI
+npm run test:e2e:ui
+
+# Run tests in headed mode (see browser)
+npm run test:e2e:headed
+```
+
+**Prerequisites:**
+- Backend server must be running on port 8000
+- Frontend must be built (tests use production build)
+
+**Test Coverage:**
+- Homepage load and form display
+- Creating a revision
+- Answering questions
+- Viewing summary
+- File upload UI
+- Form validation
+- Complete workflow end-to-end
+
+See [README_TESTING.md](./README_TESTING.md) for detailed E2E testing documentation.
+
+#### Backend API Tests
+
 The project includes comprehensive test suites to verify functionality and catch regressions.
 
 #### Test Files
