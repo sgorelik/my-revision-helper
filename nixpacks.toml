@@ -1,6 +1,10 @@
 # Nixpacks configuration for Railway
 # Ensures both Node.js and Python are available
 
+[providers]
+node = "18"
+python = "3.12"
+
 [phases.setup]
 nixPkgs = ["nodejs-18_x", "python312"]
 
