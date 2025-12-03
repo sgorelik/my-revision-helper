@@ -770,11 +770,17 @@ async def get_summary(run_id: str):
 # This allows the FastAPI server to serve the React frontend
 # IMPORTANT: This must be added AFTER all API routes are defined
 frontend_build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+logger.info(f"Frontend build path: {frontend_build_path}")
+logger.info(f"Frontend build path exists: {os.path.exists(frontend_build_path)}")
+
 if os.path.exists(frontend_build_path):
     # Mount static assets (JS, CSS, images)
     assets_path = os.path.join(frontend_build_path, "assets")
     if os.path.exists(assets_path):
         app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+        logger.info(f"Mounted static assets from: {assets_path}")
+    else:
+        logger.warning(f"Assets directory not found: {assets_path}")
     
     # Serve index.html for all non-API routes (catch-all must be last)
     @app.get("/{full_path:path}")
@@ -790,5 +796,25 @@ if os.path.exists(frontend_build_path):
         # Serve index.html for all frontend routes (React Router handles client-side routing)
         index_path = os.path.join(frontend_build_path, "index.html")
         if os.path.exists(index_path):
+            logger.info(f"Serving frontend from: {index_path}")
             return FileResponse(index_path)
-        return {"error": "Frontend not built"}
+        else:
+            logger.error(f"Frontend index.html not found at: {index_path}")
+            return {
+                "error": "Frontend not built",
+                "details": f"Expected index.html at {index_path}",
+                "build_path": frontend_build_path,
+                "build_path_exists": os.path.exists(frontend_build_path)
+            }
+else:
+    logger.error(f"Frontend build directory not found: {frontend_build_path}")
+    # Fallback: serve a simple message if frontend isn't built
+    @app.get("/{full_path:path}")
+    async def serve_frontend_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            return {"error": "Not found"}
+        return {
+            "error": "Frontend not built",
+            "details": f"Frontend build directory not found at {frontend_build_path}",
+            "message": "Please ensure the frontend is built during deployment (npm run build in frontend/)"
+        }
