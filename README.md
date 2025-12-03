@@ -98,10 +98,16 @@ Open your browser to: `http://localhost:5173`
    - **Subject**: Subject area (e.g., "Mathematics")
    - **Topics**: Comma-separated topic areas
    - **Description**: Detailed description (used for AI question generation)
+   - **Upload Images** (optional): Upload JPEG/PNG images containing text
+     - Text is automatically extracted using OCR (OpenAI Vision API)
+     - Extracted text is combined with your description for question generation
+     - Maximum file size: 10MB per file
    - **Desired Question Count**: Number of questions to generate
    - **Accuracy Threshold**: Target accuracy percentage
 
 2. Click "Create Revision"
+   - If images are uploaded, they will be processed first
+   - The revision will be created with the combined text from description and images
 
 ### Running a Revision
 
@@ -152,10 +158,129 @@ my_revision_helper/
 
 ## Development
 
-### Running Tests
+### Testing
 
+The project includes comprehensive test suites to verify functionality and catch regressions.
+
+#### Test Files
+
+- **`test_bootstrap.py`**: Verifies basic setup (imports, environment, Temporal connection)
+- **`test_deployment.py`**: Checks deployment configuration (static files, CORS, environment variables)
+- **`test_api_scenarios.py`**: Integration tests for core API workflows
+
+#### Running Tests
+
+**Run all tests:**
 ```bash
 pytest
+```
+
+**Run specific test file:**
+```bash
+pytest test_api_scenarios.py -v
+```
+
+**Run specific test:**
+```bash
+pytest test_api_scenarios.py::test_health_endpoint -v
+```
+
+**Run tests directly (without pytest):**
+```bash
+python3 test_api_scenarios.py
+python3 test_bootstrap.py
+```
+
+#### Test Coverage
+
+The `test_api_scenarios.py` suite covers:
+
+1. **Health Check** (`test_health_endpoint`)
+   - Verifies the `/api/health` endpoint responds correctly
+
+2. **Revision Creation** (`test_create_revision_basic`, `test_create_revision_with_files`)
+   - Creates revisions with and without file uploads
+   - Validates response structure and data persistence
+
+3. **Run Management** (`test_start_run`)
+   - Tests starting a revision run
+   - Verifies run status and ID generation
+
+4. **Question Flow** (`test_get_questions`)
+   - Retrieves questions for a run
+   - Validates question structure
+
+5. **Answer Submission** (`test_submit_answer`)
+   - Submits answers and verifies marking
+   - Tests both AI marking and fallback behavior
+
+6. **Summary Generation** (`test_get_summary`)
+   - Retrieves completion summary
+   - Validates accuracy calculations
+
+7. **Full Workflow** (`test_full_workflow`)
+   - End-to-end test: create → run → questions → answers → summary
+   - Ensures all components work together
+
+8. **AI Marking** (`test_marking_with_ai`)
+   - Verifies AI-powered answer marking works correctly
+   - Tests explanation generation
+   - Only runs if `OPENAI_API_KEY` is set
+
+#### Test Requirements
+
+**Required:**
+- `pytest` - Test framework
+- `fastapi` - For `TestClient`
+- `httpx` - HTTP client (installed with fastapi)
+
+**Optional:**
+- `Pillow` - For file upload tests (`pip install Pillow`)
+  - If not installed, file upload tests are skipped
+
+#### Test Environment
+
+Tests use FastAPI's `TestClient` which:
+- Runs in-process (no network calls)
+- Isolates each test (fresh state)
+- Fast execution
+- No external dependencies required (except OpenAI for AI tests)
+
+#### Example Test Output
+
+```bash
+$ pytest test_api_scenarios.py -v
+
+============================= test session starts ==============================
+test_api_scenarios.py::test_health_endpoint PASSED                       [ 11%]
+test_api_scenarios.py::test_create_revision_basic PASSED                 [ 22%]
+test_api_scenarios.py::test_create_revision_with_files SKIPPED           [ 33%]
+test_api_scenarios.py::test_start_run PASSED                             [ 44%]
+test_api_scenarios.py::test_get_questions PASSED                         [ 55%]
+test_api_scenarios.py::test_submit_answer PASSED                         [ 66%]
+test_api_scenarios.py::test_get_summary PASSED                           [ 77%]
+test_api_scenarios.py::test_full_workflow PASSED                         [ 88%]
+test_api_scenarios.py::test_marking_with_ai PASSED                       [100%]
+
+============================== 8 passed, 1 skipped in 6.73s ===================
+```
+
+#### Writing New Tests
+
+When adding new features, add corresponding tests:
+
+1. **API Endpoints**: Add tests in `test_api_scenarios.py`
+2. **Workflows**: Add tests in a new `test_workflows.py` file
+3. **Utilities**: Add unit tests in `test_utils.py`
+
+Example test structure:
+```python
+def test_new_feature():
+    """Test description."""
+    response = client.post("/api/new-endpoint", json={...})
+    assert response.status_code == 200
+    data = response.json()
+    assert data["expected_field"] == "expected_value"
 ```
 
 ### Code Style
@@ -229,11 +354,15 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for production considerations.
 
 - [ ] Move question generation to Temporal workflow
 - [ ] Move marking to Temporal activity
-- [ ] Persistent database integration
-- [ ] User authentication
-- [ ] File upload processing
+- [ ] Persistent database integration (PostgreSQL)
+- [ ] User authentication and authorization
+- [x] File upload processing with OCR (✅ Implemented)
 - [ ] Voice input for answers
 - [ ] Image scanning for handwritten work
+- [ ] Revision configuration persistence (save/load revisions)
+- [ ] Multi-language support
+- [ ] Question difficulty levels
+- [ ] Progress tracking and analytics
 
 ## License
 

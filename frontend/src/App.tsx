@@ -9,6 +9,8 @@ type RevisionConfig = {
   description?: string
   desiredQuestionCount: number
   accuracyThreshold: number
+  uploadedFiles?: string[] | null
+  extractedTextPreview?: string | null
 }
 
 type Question = {
@@ -40,7 +42,10 @@ type RevisionRun = {
 // When served from same domain (production), use relative path
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
-async function createRevision(config: RevisionConfig): Promise<RevisionConfig> {
+async function createRevision(
+  config: RevisionConfig,
+  files?: File[]
+): Promise<RevisionConfig> {
   const formData = new FormData()
   formData.append('name', config.name)
   formData.append('subject', config.subject)
@@ -48,6 +53,13 @@ async function createRevision(config: RevisionConfig): Promise<RevisionConfig> {
   formData.append('desiredQuestionCount', String(config.desiredQuestionCount))
   formData.append('accuracyThreshold', String(config.accuracyThreshold))
   formData.append('topics', JSON.stringify(config.topics))
+  
+  // Add files if provided
+  if (files && files.length > 0) {
+    files.forEach((file) => {
+      formData.append('files', file)
+    })
+  }
 
   const res = await fetch(`${API_BASE}/revisions`, {
     method: 'POST',
@@ -111,7 +123,9 @@ function App() {
     desiredQuestionCount: 2,
     accuracyThreshold: 80,
   })
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [isCreating, setIsCreating] = useState(false)
+  const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const [question, setQuestion] = useState<Question | null>(null)
@@ -137,19 +151,23 @@ function App() {
     e.preventDefault()
     setError(null)
     setIsCreating(true)
+    setIsProcessingFiles(selectedFiles.length > 0)
     try {
       const topics = form.topicsInput
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean)
-      const created = await createRevision({
-        name: form.name,
-        subject: form.subject,
-        topics,
-        description: form.description,
-        desiredQuestionCount: form.desiredQuestionCount,
-        accuracyThreshold: form.accuracyThreshold,
-      })
+      const created = await createRevision(
+        {
+          name: form.name,
+          subject: form.subject,
+          topics,
+          description: form.description,
+          desiredQuestionCount: form.desiredQuestionCount,
+          accuracyThreshold: form.accuracyThreshold,
+        },
+        selectedFiles.length > 0 ? selectedFiles : undefined
+      )
       setRevision(created)
 
       // Start a run for this revision and load the first question
@@ -162,10 +180,13 @@ function App() {
       setLastResult(null)
       setSummary(null)
       await loadRevisions()
+      // Clear selected files after successful creation
+      setSelectedFiles([])
     } catch (err: any) {
       setError(err.message ?? 'Failed to create revision')
     } finally {
       setIsCreating(false)
+      setIsProcessingFiles(false)
     }
   }
 
@@ -212,10 +233,37 @@ function App() {
       {knownRevisions.length > 0 && !revision && (
         <section style={{ marginBottom: '2rem' }}>
           <h2>Existing Revisions</h2>
-          <ul>
+          <ul style={{ listStyle: 'none', padding: 0 }}>
             {knownRevisions.map((r) => (
-              <li key={r.id}>
-                <strong>{r.name}</strong> ({r.subject})
+              <li
+                key={r.id}
+                style={{
+                  padding: '0.75rem',
+                  marginBottom: '0.5rem',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                }}
+              >
+                <div>
+                  <strong>{r.name}</strong> ({r.subject})
+                </div>
+                {r.uploadedFiles && r.uploadedFiles.length > 0 && (
+                  <div style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>
+                    📎 Files: {r.uploadedFiles.join(', ')}
+                  </div>
+                )}
+                {r.extractedTextPreview && (
+                  <div
+                    style={{
+                      fontSize: '0.85rem',
+                      color: '#666',
+                      marginTop: '0.25rem',
+                      fontStyle: 'italic',
+                    }}
+                  >
+                    "{r.extractedTextPreview}"
+                  </div>
+                )}
               </li>
             ))}
           </ul>
@@ -258,7 +306,44 @@ function App() {
               <textarea
                 value={form.description}
                 onChange={(e) => onChangeForm('description', e.target.value)}
+                placeholder="Describe what to study, or upload images with text below"
               />
+            </label>
+            <label>
+              Upload Images (JPEG, PNG) - Text will be extracted automatically
+              <input
+                type="file"
+                accept="image/jpeg,image/jpg,image/png,image/gif,image/webp"
+                multiple
+                onChange={(e) => {
+                  const files = Array.from(e.target.files || [])
+                  // Validate file sizes (10MB max per file)
+                  const MAX_SIZE = 10 * 1024 * 1024 // 10MB
+                  const validFiles: File[] = []
+                  const invalidFiles: string[] = []
+                  
+                  files.forEach((file) => {
+                    if (file.size > MAX_SIZE) {
+                      invalidFiles.push(`${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB)`)
+                    } else {
+                      validFiles.push(file)
+                    }
+                  })
+                  
+                  setSelectedFiles(validFiles)
+                  if (invalidFiles.length > 0) {
+                    setError(`Files too large (max 10MB): ${invalidFiles.join(', ')}`)
+                  }
+                }}
+              />
+              {selectedFiles.length > 0 && (
+                <div style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: '#666' }}>
+                  Selected {selectedFiles.length} file(s): {selectedFiles.map(f => `${f.name} (${(f.size / 1024).toFixed(0)}KB)`).join(', ')}
+                </div>
+              )}
+              <div style={{ fontSize: '0.8rem', color: '#999', marginTop: '0.25rem' }}>
+                Maximum file size: 10MB per file
+              </div>
             </label>
             <label>
               Desired Number of Questions
@@ -287,7 +372,11 @@ function App() {
             {error && <p style={{ color: 'red' }}>{error}</p>}
 
             <button type="submit" disabled={isCreating}>
-              {isCreating ? 'Creating...' : 'Create Revision'}
+              {isProcessingFiles
+                ? 'Processing images and creating...'
+                : isCreating
+                ? 'Creating...'
+                : 'Create Revision'}
             </button>
           </form>
         </section>

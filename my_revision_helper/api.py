@@ -22,10 +22,12 @@ Environment Variables:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import uuid
+from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -58,7 +60,7 @@ except Exception:  # pragma: no cover
 # state management.
 
 # Stored revision definitions keyed by revision_id
-# Each entry contains: id, name, subject, topics, description, desiredQuestionCount, accuracyThreshold
+# Each entry contains: id, name, subject, topics, description, desiredQuestionCount, accuracyThreshold, extractedTexts
 REVISION_DEFS: Dict[str, dict] = {}
 
 # Stored runs keyed by run_id
@@ -85,6 +87,8 @@ class RevisionCreateResponse(BaseModel):
     description: Optional[str] = None
     desiredQuestionCount: int
     accuracyThreshold: int
+    uploadedFiles: Optional[List[str]] = None  # List of uploaded file names
+    extractedTextPreview: Optional[str] = None  # Preview of extracted text (first 200 chars)
 
 
 class Question(BaseModel):
@@ -163,6 +167,11 @@ async def get_temporal_client() -> Client:
     Raises:
         RuntimeError: If Temporal SDK is not installed or connection fails.
     """
+    try:
+        from temporalio.client import Client
+    except ImportError:
+        raise RuntimeError("Temporal SDK not installed")
+    
     target = os.getenv("TEMPORAL_TARGET", "localhost:7233")
     return await Client.connect(target)
 
@@ -221,7 +230,161 @@ def get_ai_context() -> str:
     return context
 
 
+def get_marking_context() -> str:
+    """
+    Get context specifically for marking/evaluation.
+    
+    This is separate from question generation context to ensure marking
+    doesn't include revision-specific content or file knowledge.
+    
+    Returns:
+        String containing marking-specific instructions.
+    """
+    return (
+        "You are a fair and thorough tutor grading a student's answer. "
+        "Evaluate the answer based solely on the question asked. "
+        "Be fair but thorough - partial credit may be appropriate for partially correct answers. "
+        "Provide clear explanations for why an answer is correct or incorrect."
+    )
+
+
+# Maximum file size: 10MB (OpenAI Vision API has limits)
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB in bytes
+
+
+async def extract_text_from_image(file: UploadFile, client: Any) -> Optional[str]:
+    """
+    Extract text from an uploaded image using OpenAI Vision API.
+    
+    Args:
+        file: Uploaded file (should be an image)
+        client: OpenAI client instance
+        
+    Returns:
+        Extracted text, or None if extraction fails
+    """
+    try:
+        # Read file content
+        contents = await file.read()
+        
+        # Check file size
+        if len(contents) > MAX_FILE_SIZE:
+            logger.warning(f"File {file.filename} exceeds maximum size of {MAX_FILE_SIZE / (1024*1024)}MB")
+            return None
+        
+        # Encode to base64 for OpenAI Vision API
+        base64_image = base64.b64encode(contents).decode('utf-8')
+        
+        # Determine image format from content type or file extension
+        content_type = file.content_type or ""
+        if "jpeg" in content_type or "jpg" in content_type:
+            image_format = "image/jpeg"
+        elif "png" in content_type:
+            image_format = "image/png"
+        elif "gif" in content_type:
+            image_format = "image/gif"
+        elif "webp" in content_type:
+            image_format = "image/webp"
+        else:
+            # Try to infer from filename
+            filename = file.filename or ""
+            if filename.lower().endswith(('.jpg', '.jpeg')):
+                image_format = "image/jpeg"
+            elif filename.lower().endswith('.png'):
+                image_format = "image/png"
+            else:
+                image_format = "image/jpeg"  # Default assumption
+        
+        # Use OpenAI Vision API to extract text
+        response = client.chat.completions.create(
+            model="gpt-4o",  # gpt-4o has vision capabilities
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a text extraction assistant. Extract all text from the image accurately, preserving formatting and structure. Return only the extracted text, no explanations.",
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Extract all text from this image. Preserve the structure and formatting as much as possible.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{image_format};base64,{base64_image}",
+                            },
+                        },
+                    ],
+                },
+            ],
+            max_tokens=2000,
+        )
+        
+        extracted_text = response.choices[0].message.content
+        logger.info(f"Extracted {len(extracted_text)} characters from image {file.filename}")
+        return extracted_text
+        
+    except Exception as e:
+        logger.error(f"Failed to extract text from image {file.filename}: {e}", exc_info=True)
+        return None
+
+
+async def process_uploaded_files(files: List[UploadFile]) -> Dict[str, str]:
+    """
+    Process uploaded files and extract text from images.
+    
+    Args:
+        files: List of uploaded files
+        
+    Returns:
+        Dictionary mapping filename to extracted text
+    """
+    if not files:
+        return {}
+    
+    client = get_openai_client()
+    if not client:
+        logger.warning("OpenAI client not available - cannot extract text from images")
+        return {}
+    
+    extracted_texts = {}
+    skipped_files = []
+    
+    for file in files:
+        # Check if it's an image file
+        content_type = file.content_type or ""
+        filename = file.filename or "unknown"
+        
+        # Check file size before processing
+        # Note: We need to read the file to check size, but we'll read it again in extract_text_from_image
+        # For now, we'll let extract_text_from_image handle the size check
+        
+        if any(img_type in content_type for img_type in ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"]):
+            logger.info(f"Processing image file: {filename}")
+            text = await extract_text_from_image(file, client)
+            if text:
+                extracted_texts[filename] = text
+            else:
+                skipped_files.append(f"{filename} (extraction failed or file too large)")
+        else:
+            skipped_files.append(f"{filename} (not an image file)")
+            logger.warning(f"Skipping non-image file: {filename} (type: {content_type})")
+    
+    if skipped_files:
+        logger.info(f"Skipped {len(skipped_files)} file(s): {', '.join(skipped_files)}")
+    
+    return extracted_texts
+
+
 # ---------- Endpoints used by the React frontend ----------
+
+@app.get("/api/health")
+async def health():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
 
 @app.post("/api/revisions", response_model=RevisionCreateResponse)
 async def create_revision(
@@ -237,9 +400,11 @@ async def create_revision(
     Create a new revision definition.
 
     This endpoint:
-    1. Creates a new revision with the provided configuration
-    2. Starts a Temporal workflow for the revision (for future orchestration)
-    3. Stores the revision definition in-memory
+    1. Processes uploaded image files to extract text using OCR (OpenAI Vision API)
+    2. Combines extracted text with the provided description
+    3. Creates a new revision with the provided configuration
+    4. Starts a Temporal workflow for the revision (for future orchestration)
+    5. Stores the revision definition in-memory
 
     Args:
         name: Name/title of the revision
@@ -248,26 +413,59 @@ async def create_revision(
         desiredQuestionCount: Number of questions to generate for runs
         accuracyThreshold: Target accuracy percentage (0-100)
         topics: JSON array of topic areas (e.g., '["Algebra", "Geometry"]')
-        files: Optional uploaded files (not yet processed in MVP)
+        files: Optional uploaded image files (JPEG, PNG, etc.) - text will be extracted via OCR
 
     Returns:
         RevisionCreateResponse with the created revision's details
 
     Note:
-        Files are accepted but not yet processed. They will be used in future
-        iterations to seed question content.
+        Uploaded image files are processed using OpenAI Vision API to extract text.
+        The extracted text is combined with the description and used for question generation.
+        Supported image formats: JPEG, PNG, GIF, WebP
     """
     topics_list = json.loads(topics) if topics else []
     revision_id = str(uuid.uuid4())
 
+    # Process uploaded files to extract text
+    extracted_texts = {}
+    if files:
+        logger.info(f"Processing {len(files)} uploaded file(s)")
+        extracted_texts = await process_uploaded_files(files)
+        if extracted_texts:
+            logger.info(f"Successfully extracted text from {len(extracted_texts)} file(s)")
+
+    # Combine description with extracted text from files
+    combined_description = description or ""
+    if extracted_texts:
+        file_texts = "\n\n".join([f"Text from {filename}:\n{text}" for filename, text in extracted_texts.items()])
+        if combined_description:
+            combined_description = f"{combined_description}\n\n{file_texts}"
+        else:
+            combined_description = file_texts
+
     # Start a workflow for this revision definition (can be expanded later)
-    client = await get_temporal_client()
-    await client.start_workflow(
-        RevisionWorkflow.run,
-        [revision_id, name, description or None],
-        id=revision_id,
-        task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "revision-helper-queue"),
-    )
+    # Note: If Temporal is not available, we continue without it (workflow is optional for MVP)
+    try:
+        client = await get_temporal_client()
+        await client.start_workflow(
+            RevisionWorkflow.run,
+            revision_id,  # task_id
+            name,  # title
+            combined_description or None,  # description
+            id=revision_id,
+            task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "revision-helper-queue"),
+        )
+        logger.info(f"Started Temporal workflow for revision {revision_id}")
+    except Exception as e:
+        # Don't fail revision creation if Temporal is unavailable
+        logger.warning(f"Could not start Temporal workflow (Temporal may not be running): {e}")
+        logger.info("Continuing with revision creation without workflow...")
+
+    # Create preview of extracted text (first 200 characters)
+    extracted_preview = None
+    if extracted_texts:
+        all_text = " ".join(extracted_texts.values())
+        extracted_preview = all_text[:200] + ("..." if len(all_text) > 200 else "")
 
     # Persist the revision definition in-memory for the MVP
     revision_def = RevisionCreateResponse(
@@ -275,14 +473,17 @@ async def create_revision(
         name=name,
         subject=subject,
         topics=topics_list,
-        description=description or None,
+        description=combined_description or None,  # Use combined description
         desiredQuestionCount=desiredQuestionCount,
         accuracyThreshold=accuracyThreshold,
+        uploadedFiles=[f.filename for f in files] if files else None,
+        extractedTextPreview=extracted_preview,
     )
-    REVISION_DEFS[revision_id] = revision_def.model_dump()
-
-    # Files are accepted but not yet used in MVP
-    # (You can persist them later.)
+    
+    # Store with extracted texts for future reference
+    revision_data = revision_def.model_dump()
+    revision_data["extractedTexts"] = extracted_texts
+    REVISION_DEFS[revision_id] = revision_data
 
     return revision_def
 
@@ -459,22 +660,36 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
     
     if client and question_text:
         try:
-            logger.info(f"Marking answer for question '{question_text[:50]}...' with student answer: {payload.answer[:50]}...")
-            general_context = get_ai_context()
+            # Use marking-specific context (no revision content or file knowledge)
+            marking_context = get_marking_context()
             prompt = (
-                f"{general_context}\n\n"
-                "You are grading a student's answer.\n"
+                f"{marking_context}\n\n"
                 "Question: " + question_text + "\n"
                 "Student answer: " + payload.answer + "\n\n"
                 "Respond in strict JSON with keys: is_correct (true/false), "
                 "correct_answer (string), explanation (string). No extra text."
             )
+            
+            # Log full input for debugging
+            logger.info("=" * 80)
+            logger.info("MARKING REQUEST - Full Input:")
+            logger.info(f"Question ID: {payload.questionId}")
+            logger.info(f"Question: {question_text}")
+            logger.info(f"Student Answer: {payload.answer}")
+            logger.info(f"Marking Context: {marking_context}")
+            logger.info(f"Full Prompt:\n{prompt}")
+            logger.info("=" * 80)
+            
+            system_message = "You are a tutor who returns only valid JSON."
+            logger.info(f"System Message: {system_message}")
+            logger.info(f"Model: {get_openai_model()}")
+            
             response = client.chat.completions.create(
                 model=get_openai_model(),
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a tutor who returns only valid JSON.",
+                        "content": system_message,
                     },
                     {"role": "user", "content": prompt},
                 ],
@@ -482,7 +697,14 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
                 temperature=0.0,
             )
             content = response.choices[0].message.content or ""
-            logger.info(f"OpenAI marking response: {content[:200]}...")
+            
+            # Log full output for debugging
+            logger.info("=" * 80)
+            logger.info("MARKING RESPONSE - Full Output:")
+            logger.info(f"Raw Response: {content}")
+            logger.info(f"Response Length: {len(content)} characters")
+            logger.info("=" * 80)
+            
             data = json.loads(content)
             result = AnswerResult(
                 questionId=payload.questionId,
@@ -491,7 +713,7 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
                 correctAnswer=str(data.get("correct_answer") or ""),
                 explanation=data.get("explanation") or None,
             )
-            logger.info(f"Marking result: isCorrect={result.isCorrect}, correctAnswer={result.correctAnswer}")
+            logger.info(f"Parsed Result: isCorrect={result.isCorrect}, correctAnswer={result.correctAnswer}, explanation={result.explanation}")
         except Exception as e:
             # Fallback to simple correctness heuristic if parsing or API call fails
             logger.error(f"OpenAI marking failed: {e}", exc_info=True)
@@ -519,6 +741,8 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
             correctAnswer=correct_answer,
             explanation=None,
         )
+    
+    # Store and return the result
     RUN_ANSWERS.setdefault(run_id, []).append(result.model_dump())
     return result
 
