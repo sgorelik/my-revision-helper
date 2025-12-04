@@ -408,7 +408,28 @@ async def create_revision(
         - PowerPoint (PPTX): Uses python-pptx library
         The extracted text is combined with the description and used for question generation.
     """
-    topics_list = json.loads(topics) if topics else []
+    # Convert string form values to appropriate types
+    try:
+        desired_question_count = int(desiredQuestionCount)
+    except (ValueError, TypeError):
+        logger.error(f"Invalid desiredQuestionCount: {desiredQuestionCount}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=f"Invalid desiredQuestionCount: must be an integer, got {desiredQuestionCount!r}")
+    
+    try:
+        accuracy_threshold = int(accuracyThreshold)
+    except (ValueError, TypeError):
+        logger.error(f"Invalid accuracyThreshold: {accuracyThreshold}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail=f"Invalid accuracyThreshold: must be an integer, got {accuracyThreshold!r}")
+    
+    # Parse topics JSON
+    try:
+        topics_list = json.loads(topics) if topics and topics != "[]" else []
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid topics JSON: {topics}, error: {e}")
+        topics_list = []
+    
     revision_id = str(uuid.uuid4())
 
     # Process uploaded files to extract text
