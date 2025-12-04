@@ -374,8 +374,8 @@ async def create_revision(
     name: str = Form(...),
     subject: str = Form(...),
     description: str = Form(""),
-    desiredQuestionCount: int = Form(...),
-    accuracyThreshold: int = Form(...),
+    desiredQuestionCount: str = Form(...),  # Accept as string, convert to int
+    accuracyThreshold: str = Form(...),  # Accept as string, convert to int
     topics: str = Form("[]"),
     files: List[UploadFile] = File(default_factory=list),
 ):
@@ -460,8 +460,8 @@ async def create_revision(
         subject=subject,
         topics=topics_list,
         description=combined_description or None,  # Use combined description
-        desiredQuestionCount=desiredQuestionCount,
-        accuracyThreshold=accuracyThreshold,
+        desiredQuestionCount=desired_question_count,
+        accuracyThreshold=accuracy_threshold,
         uploadedFiles=[f.filename for f in files] if files else None,
         extractedTextPreview=extracted_preview,
     )
