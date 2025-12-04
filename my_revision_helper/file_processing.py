@@ -344,3 +344,4 @@ async def process_uploaded_files(files: List[UploadFile], openai_client: Any) ->
     
     return extracted_texts
 
+

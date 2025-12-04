@@ -109,6 +109,7 @@ class AnswerResult(BaseModel):
     """Result of marking a student's answer."""
 
     questionId: str
+    questionText: Optional[str] = None  # The question text for display in summary
     studentAnswer: str
     isCorrect: bool  # Kept for backward compatibility
     score: str  # "Full Marks", "Partial Marks", or "Incorrect"
@@ -610,6 +611,15 @@ async def list_runs() -> List[RevisionRun]:
     return [RevisionRun(**run) for run in REVISION_RUNS.values()]
 
 
+@app.get("/api/runs/{run_id}/question-count")
+async def get_question_count(run_id: str):
+    """
+    Get the total number of questions for this run.
+    """
+    questions = RUN_QUESTIONS.get(run_id, [])
+    return {"totalQuestions": len(questions)}
+
+
 @app.get("/api/runs/{run_id}/next-question", response_model=Question | None)
 async def get_next_question(run_id: str):
     """
@@ -861,23 +871,33 @@ async def get_summary(run_id: str):
     Summarise all answered questions for this run.
     """
     answers_raw = RUN_ANSWERS.get(run_id, [])
-    answers = [AnswerResult(**a) for a in answers_raw]
-    if answers:
+    questions_dict = {q["id"]: q.get("text", "") for q in RUN_QUESTIONS.get(run_id, [])}
+    
+    # Enrich answers with question text
+    enriched_answers = []
+    for a in answers_raw:
+        answer_dict = dict(a)
+        # Add question text if available
+        if answer_dict.get("questionId") in questions_dict:
+            answer_dict["questionText"] = questions_dict[answer_dict["questionId"]]
+        enriched_answers.append(AnswerResult(**answer_dict))
+    
+    if enriched_answers:
         # Calculate accuracy: Full Marks = 100%, Partial Marks = 50%, Incorrect = 0%
         total_score = 0.0
-        for a in answers:
+        for a in enriched_answers:
             if a.score == "Full Marks":
                 total_score += 100.0
             elif a.score == "Partial Marks":
                 total_score += 50.0
             # Incorrect adds 0
-        accuracy = total_score / len(answers) if answers else 0.0
+        accuracy = total_score / len(enriched_answers) if enriched_answers else 0.0
     else:
         accuracy = 0.0
 
     return RevisionSummary(
         revisionId=REVISION_RUNS.get(run_id, {}).get("revisionId", ""),
-        questions=answers,
+        questions=enriched_answers,
         overallAccuracy=accuracy,
     )
 

@@ -21,11 +21,11 @@ import {
   PhotoIcon,
   CheckCircleIcon,
   XCircleIcon,
-  AcademicCapIcon,
   XMarkIcon,
   DocumentIcon,
   PresentationChartBarIcon,
 } from '@heroicons/react/24/outline'
+import Logo from './Logo'
 
 type RevisionConfig = {
   id?: string
@@ -46,6 +46,7 @@ type Question = {
 
 type AnswerResult = {
   questionId: string
+  questionText?: string | null
   studentAnswer: string
   isCorrect: boolean  // Kept for backward compatibility
   score: string  // "Full Marks", "Partial Marks", or "Incorrect"
@@ -140,7 +141,15 @@ async function startRun(revisionId: string): Promise<RevisionRun> {
 async function getNextQuestion(runId: string): Promise<Question | null> {
   const res = await fetch(`${API_BASE}/runs/${runId}/next-question`)
   if (!res.ok) throw new Error('Failed to load question')
-  return res.json()
+  const data = await res.json()
+  return data ? { id: data.id, text: data.text } : null
+}
+
+async function getQuestionCount(runId: string): Promise<number> {
+  const res = await fetch(`${API_BASE}/runs/${runId}/question-count`)
+  if (!res.ok) return 0
+  const data = await res.json()
+  return data.totalQuestions || 0
 }
 
 async function submitAnswer(
@@ -180,22 +189,22 @@ function App() {
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Shared styling for all Input and Textarea components
+  // Shared styling for all Input and Textarea components - Calculator color scheme
   const inputClassNames = {
-    label: "mb-2 ml-3 text-blue-600",
+    label: "mb-2 ml-3 text-orange-600",
     input: "rounded-lg ml-2 pr-2 mb-2 mt-2 text-gray-700",
-    inputWrapper: "rounded-lg border-2 border-blue-200 hover:border-blue-400 pr-4",
+    inputWrapper: "rounded-lg border-2 border-orange-200 hover:border-orange-400 pr-4",
     placeholder: "ml-3 text-gray-400"
   }
 
-  // Styling for Select dropdown to match Input components
+  // Styling for Select dropdown to match Input components - Calculator color scheme
   const selectClassNames = {
-    label: "mb-2 ml-3 text-blue-600",
-    trigger: "rounded-lg border-2 border-blue-200 hover:border-blue-400 pr-4 min-h-unit-12",
+    label: "mb-2 ml-3 text-orange-600",
+    trigger: "rounded-lg border-2 border-orange-200 hover:border-orange-400 pr-4 min-h-unit-12",
     value: "ml-2 pr-2 text-gray-700",
-    popoverContent: "rounded-lg border-2 border-blue-200 bg-white shadow-lg p-3 max-w-full",
-    listbox: "bg-white flex flex-wrap gap-2",
-    listboxItem: "bg-white text-gray-900 w-auto inline-block min-h-0 h-auto",
+    popoverContent: "rounded-lg border-2 border-orange-200 bg-white shadow-lg p-3 max-w-full",
+    listbox: "bg-white flex flex-wrap gap-2 max-w-full",
+    listboxItem: "bg-white text-gray-900 min-h-0 h-auto",
   }
 
   // Subjects list (loaded from backend)
@@ -205,6 +214,9 @@ function App() {
   const [lastResult, setLastResult] = useState<AnswerResult | null>(null)
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false)
   const [summary, setSummary] = useState<RevisionSummary | null>(null)
+  const [totalQuestions, setTotalQuestions] = useState<number>(0)
+  const [currentQuestionNumber, setCurrentQuestionNumber] = useState<number>(0)
+  const [isLoadingQuestion, setIsLoadingQuestion] = useState(false)
 
   const loadRevisions = async () => {
     try {
@@ -268,6 +280,11 @@ function App() {
       const newRun = await startRun(created.id!)
       setRun(newRun)
 
+      // Get total question count and set initial question number
+      const total = await getQuestionCount(newRun.id)
+      setTotalQuestions(total)
+      setCurrentQuestionNumber(1)
+
       const q = await getNextQuestion(newRun.id)
       setQuestion(q)
       setAnswer('')
@@ -305,13 +322,32 @@ function App() {
 
   const handleNextQuestion = async () => {
     if (!run) return
+    setIsLoadingQuestion(true)
     try {
       const q = await getNextQuestion(run.id)
       setQuestion(q)
       setAnswer('')
       setLastResult(null)
+      if (q) {
+        setCurrentQuestionNumber(prev => prev + 1)
+      }
     } catch (err: any) {
       setError(err.message ?? 'Failed to load next question')
+    } finally {
+      setIsLoadingQuestion(false)
+    }
+  }
+
+  const handleFinishEarly = async () => {
+    if (!run) return
+    try {
+      const s = await getRunSummary(run.id)
+      setSummary(s)
+      setQuestion(null)
+      setAnswer('')
+      setLastResult(null)
+    } catch (err: any) {
+      setError(err.message ?? 'Failed to load summary')
     }
   }
 
@@ -325,26 +361,42 @@ function App() {
     }
   }
 
+  // Auto-load summary when no more questions
+  useEffect(() => {
+    if (run && !question && !summary && totalQuestions > 0) {
+      // Small delay to show animation
+      const timer = setTimeout(() => {
+        handleLoadSummary()
+      }, 1500)
+      return () => clearTimeout(timer)
+    }
+  }, [run, question, summary, totalQuestions])
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div className="min-h-screen bg-gradient-to-br from-yellow-50 to-orange-50">
       <div className="max-w-6xl ml-8 mr-auto px-4 py-8">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2 flex items-center justify-center gap-2">
-            <AcademicCapIcon className="w-5 h-5 text-indigo-600" />
-            My Revision Helper
-          </h1>
+          <div className="flex items-center justify-center gap-3 mb-2">
+            <Logo size="lg" />
+            <h1 className="text-4xl font-bold text-gray-900">
+              My Revision Helper
+            </h1>
+          </div>
           <p className="text-gray-600">AI-powered study companion for effective learning</p>
         </div>
 
       {knownRevisions.length > 0 && !revision && (
-        <Card className="mb-6 rounded-xl border-2 border-purple-100 shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-purple-50 to-pink-50 rounded-t-xl">
-            <h2 className="text-2xl font-semibold text-purple-900">Existing Revisions</h2>
+        <Card className="mb-6 rounded-xl border-2 border-orange-100 shadow-lg">
+          <CardHeader className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-t-xl">
+            <div className="flex items-center gap-3">
+              <Logo size="sm" />
+              <h2 className="text-2xl font-semibold text-orange-900">Existing Revisions</h2>
+            </div>
           </CardHeader>
           <CardBody>
             <div className="space-y-3">
               {knownRevisions.map((r) => (
-                <Card key={r.id} className="border-2 border-blue-200 hover:shadow-lg transition-all hover:border-blue-400 rounded-lg bg-gradient-to-r from-blue-50 to-cyan-50">
+                <Card key={r.id} className="border-2 border-orange-200 hover:shadow-lg transition-all hover:border-orange-400 rounded-lg bg-gradient-to-r from-yellow-50 to-cyan-50">
                   <CardBody>
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
@@ -354,7 +406,7 @@ function App() {
                         </Chip>
                         {r.uploadedFiles && r.uploadedFiles.length > 0 && (
                           <div className="flex items-center gap-1 mt-2 text-sm text-gray-600">
-                            <PhotoIcon className="w-3 h-3 text-blue-600" />
+                            <PhotoIcon className="w-3 h-3 text-cyan-600" />
                             <span>Files: {r.uploadedFiles.join(', ')}</span>
                           </div>
                         )}
@@ -374,11 +426,14 @@ function App() {
       )}
 
       {!revision && (
-        <div className="mb-6 rounded-xl border-2 border-indigo-100 shadow-lg bg-gradient-to-r from-pink-50 to-cyan-50 p-6">
-          <h2 className="text-2xl font-semibold flex items-center gap-2 text-indigo-900 mb-4">
-            <DocumentTextIcon className="w-4 h-4 text-indigo-600" />
-            Set Up a Revision
-          </h2>
+        <div className="mb-6 rounded-xl border-2 border-orange-100 shadow-lg bg-gradient-to-r from-yellow-50 to-orange-50 p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <Logo size="md" />
+            <h2 className="text-2xl font-semibold flex items-center gap-2 text-orange-900">
+              <DocumentTextIcon className="w-4 h-4 text-orange-600" />
+              Set Up a Revision
+            </h2>
+          </div>
           <form onSubmit={handleCreateRevision} className="space-y-4 w-full">
               <Input
                 label="Revision Name"
@@ -405,7 +460,7 @@ function App() {
                   <SelectItem 
                     key={subject}
                     classNames={{
-                      base: "border-2 border-blue-200 rounded-md px-3 py-1.5 w-auto inline-block flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-blue-100 data-[hover=true]:border-blue-400 data-[selected=true]:bg-blue-50",
+                      base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
                     }}
                   >
                     {subject}
@@ -433,7 +488,7 @@ function App() {
               
       <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  <PhotoIcon className="w-3.5 h-3.5 inline mr-1 text-pink-600" />
+                  <PhotoIcon className="w-3.5 h-3.5 inline mr-1 text-orange-600" />
                   Upload Files - Images, PDFs, PowerPoint (multiple files supported, text will be extracted automatically)
                 </label>
                 <input
@@ -467,10 +522,10 @@ function App() {
                       setError(`Files too large (max 50MB): ${invalidFiles.join(', ')}`)
                     }
                   }}
-                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-pink-50 file:to-purple-50 file:text-pink-700 hover:file:from-pink-100 hover:file:to-purple-100 file:border-2 file:border-pink-200"
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-orange-50 file:to-yellow-50 file:text-orange-700 hover:file:from-orange-100 hover:file:to-yellow-100 file:border-2 file:border-orange-200"
                 />
                 {selectedFiles.length > 0 && (
-                  <div className="mt-3 p-3 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border-2 border-green-200">
+                  <div className="mt-3 p-3 bg-gradient-to-r from-cyan-50 to-orange-50 rounded-lg border-2 border-cyan-200">
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-sm text-green-800 font-semibold">
                         {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected
@@ -491,7 +546,7 @@ function App() {
                         const isPPT = fileName.match(/\.(ppt|pptx)$/)
                         
                         let FileIcon = DocumentIcon
-                        let iconColor = "text-blue-600"
+                        let iconColor = "text-cyan-600"
                         if (isImage) {
                           FileIcon = PhotoIcon
                           iconColor = "text-green-600"
@@ -575,7 +630,7 @@ function App() {
               <button
                 type="submit"
                 disabled={isCreating || isProcessingFiles}
-                className="w-full rounded-lg font-semibold bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 shadow-lg text-white py-3 px-4 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-700 hover:to-red-700 shadow-lg text-white py-3 px-4 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
               >
                 {isProcessingFiles
                   ? 'Processing images and creating...'
@@ -589,13 +644,16 @@ function App() {
 
       {revision && (
         <div className="mb-6">
-          <div className="mb-4">
-            <h2 className="text-2xl font-semibold text-emerald-900 mb-2">Let's Revise!</h2>
-            <p className="text-sm text-gray-700">
-              <strong className="text-emerald-800">{revision.name}</strong> • <span className="text-teal-700">{revision.subject}</span>
-            </p>
+          <div className="mb-4 flex items-start gap-3">
+            <Logo size="md" className="flex-shrink-0" />
+            <div>
+              <h2 className="text-2xl font-semibold text-orange-900 mb-2">Let's Revise!</h2>
+              <p className="text-sm text-gray-700">
+                <strong className="text-orange-800">{revision.name}</strong> • <span className="text-cyan-700">{revision.subject}</span>
+              </p>
+            </div>
           </div>
-          <div className="rounded-xl border-2 border-emerald-100 shadow-lg bg-white p-6">
+          <div className="rounded-xl border-2 border-orange-100 shadow-lg bg-white p-6">
             {error && (
               <div className="p-3 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-lg mb-4">
                 <p className="text-sm text-red-800 font-medium">{error}</p>
@@ -604,6 +662,21 @@ function App() {
 
             {!summary && (
               <>
+                {/* Progress Tracker */}
+                {totalQuestions > 0 && (
+                  <div className="mb-4 p-3 bg-gradient-to-r from-orange-50 to-yellow-50 border-2 border-orange-200 rounded-lg">
+                    <p className="text-center text-lg font-semibold text-orange-700">
+                      Question {currentQuestionNumber} of {totalQuestions}
+                    </p>
+                    <div className="mt-2 w-full bg-blue-200 rounded-full h-2.5">
+                      <div 
+                        className="bg-orange-600 h-2.5 rounded-full transition-all duration-300"
+                        style={{ width: `${(currentQuestionNumber / totalQuestions) * 100}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+
                 {question ? (
                   <div className="space-y-4">
                     {question.text.startsWith('ERROR:') ? (
@@ -617,9 +690,11 @@ function App() {
                         </CardBody>
                       </Card>
                     ) : (
-                      <Card className="bg-gradient-to-r from-indigo-50 to-blue-50 border-2 border-indigo-300 rounded-xl shadow-md">
+                      <Card className="bg-gradient-to-r from-cyan-50 to-orange-50 border-2 border-orange-300 rounded-xl shadow-md">
                         <CardBody>
-                          <h3 className="text-lg font-semibold mb-2 text-indigo-900">Question</h3>
+                          <h3 className="text-lg font-semibold mb-2 text-orange-900">
+                            Question {totalQuestions > 0 ? `${currentQuestionNumber} of ${totalQuestions}` : ''}
+                          </h3>
                           <p className="text-gray-700 text-lg">{question.text}</p>
                         </CardBody>
                       </Card>
@@ -639,7 +714,7 @@ function App() {
                       onClick={handleSubmitAnswer}
                       color="primary"
                       size="lg"
-                      className="w-full rounded-lg font-semibold bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-lg"
+                      className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 shadow-lg"
                       isLoading={isSubmittingAnswer}
                       disabled={isSubmittingAnswer || !answer.trim()}
                     >
@@ -651,7 +726,7 @@ function App() {
                         lastResult.error 
                           ? 'border-orange-400 bg-gradient-to-r from-orange-50 to-amber-50' 
                           : lastResult.score === 'Full Marks'
-                          ? 'border-green-400 bg-gradient-to-r from-green-50 to-emerald-50'
+                          ? 'border-cyan-400 bg-gradient-to-r from-cyan-50 to-orange-50'
                           : lastResult.score === 'Partial Marks'
                           ? 'border-yellow-400 bg-gradient-to-r from-yellow-50 to-amber-50'
                           : 'border-red-400 bg-gradient-to-r from-red-50 to-rose-50'
@@ -706,54 +781,75 @@ function App() {
                               </div>
                             </>
                           )}
-                          <Button
-                            onClick={handleNextQuestion}
-                            color="primary"
-                            variant="flat"
-                            className="w-full mt-4 rounded-lg font-semibold bg-gradient-to-r from-blue-50 to-indigo-50 hover:from-blue-100 hover:to-indigo-100 border-2 border-blue-200 text-blue-700"
-                          >
-                            Next Question
-                          </Button>
+                          <div className="flex gap-2 mt-4">
+                            <Button
+                              onClick={handleFinishEarly}
+                              color="secondary"
+                              variant="flat"
+                              className="flex-1 rounded-lg font-semibold bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700"
+                            >
+                              Finish Now
+                            </Button>
+                            <Button
+                              onClick={handleNextQuestion}
+                              color="primary"
+                              variant="flat"
+                              className="flex-1 rounded-lg font-semibold bg-gradient-to-r from-orange-50 to-yellow-50 hover:from-orange-100 hover:to-yellow-100 border-2 border-orange-200 text-orange-700"
+                              isLoading={isLoadingQuestion}
+                            >
+                              Next Question
+                            </Button>
+                          </div>
                         </CardBody>
                       </Card>
                     )}
                   </div>
-                ) : (
-                  <Card className="bg-gradient-to-r from-gray-50 to-slate-50 border-2 border-gray-200 rounded-xl">
-                    <CardBody>
-                      <p className="text-gray-600 text-center py-4">
-                        No more questions. You can view your summary.
+                ) : totalQuestions > 0 ? (
+                  // Animation screen when all questions are completed
+                  <Card className="bg-gradient-to-r from-orange-50 to-yellow-50 border-2 border-orange-200 rounded-xl">
+                    <CardBody className="flex flex-col items-center justify-center py-12">
+                      <Logo size="xl" className="mb-4 animate-bounce" />
+                      <div className="text-6xl mb-4 animate-bounce">🎉</div>
+                      <p className="text-xl font-semibold text-orange-800 mb-2">Great job!</p>
+                      <p className="text-gray-600 text-center mb-6">
+                        You've completed all the questions. Loading your summary...
                       </p>
-                      <Button
-                        onClick={handleLoadSummary}
-                        color="primary"
-                        size="lg"
-                        className="w-full rounded-lg font-semibold bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 shadow-lg"
-                      >
-                        View Summary
-                      </Button>
+                      <div className="flex space-x-2">
+                        <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse"></div>
+                        <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                        <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                      </div>
                     </CardBody>
                   </Card>
-                )}
-
-                {!question && (
-                  <Button
-                    onClick={handleLoadSummary}
-                    color="primary"
-                    size="lg"
-                    className="w-full mt-4 rounded-lg font-semibold bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 shadow-lg"
-                  >
-                    View Summary
-                  </Button>
+                ) : (
+                  // Loading screen before test starts
+                  <Card className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-orange-200 rounded-xl">
+                    <CardBody className="flex flex-col items-center justify-center py-12">
+                      <Logo size="xl" className="mb-4 animate-pulse" />
+                      <div className="text-6xl mb-4 animate-spin">⏳</div>
+                      <p className="text-xl font-semibold text-orange-800 mb-2">Hang on!</p>
+                      <p className="text-gray-600 text-center mb-6">
+                        We're generating your revision questions...
+                      </p>
+                      <div className="flex space-x-2">
+                        <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse"></div>
+                        <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                        <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                      </div>
+                    </CardBody>
+                  </Card>
                 )}
               </>
             )}
 
             {summary && (
               <div className="space-y-4">
-                <Card className="bg-gradient-to-r from-indigo-500 via-purple-600 to-pink-600 text-white rounded-xl shadow-xl border-2 border-purple-300">
+                <Card className="bg-gradient-to-r from-orange-500 via-red-600 to-orange-600 text-white rounded-xl shadow-xl border-2 border-orange-300">
                   <CardBody>
-                    <h3 className="text-2xl font-bold mb-2">Summary</h3>
+                    <div className="flex items-center gap-3 mb-2">
+                      <Logo size="md" />
+                      <h3 className="text-2xl font-bold">Summary</h3>
+                    </div>
                     <p className="text-3xl font-bold">
                       Overall Accuracy: {summary.overallAccuracy.toFixed(1)}%
                     </p>
@@ -763,33 +859,42 @@ function App() {
                 <Table aria-label="Answer summary">
                   <TableHeader>
                     <TableColumn>#</TableColumn>
+                    <TableColumn>Question</TableColumn>
                     <TableColumn>Your Answer</TableColumn>
                     <TableColumn>Correct Answer</TableColumn>
                     <TableColumn>Result</TableColumn>
                   </TableHeader>
                   <TableBody>
-                    {summary.questions.map((q, idx) => (
-                      <TableRow key={q.questionId}>
-                        <TableCell>{idx + 1}</TableCell>
-                        <TableCell>{q.studentAnswer}</TableCell>
-                        <TableCell className="font-semibold">{q.correctAnswer}</TableCell>
-                        <TableCell>
-                          <Chip
-                            color={
-                              q.score === 'Full Marks' 
-                                ? 'success' 
-                                : q.score === 'Partial Marks'
-                                ? 'warning'
-                                : 'danger'
-                            }
-                            variant="flat"
-                            size="sm"
-                          >
-                            {q.score || (q.isCorrect ? 'Correct' : 'Incorrect')}
-                          </Chip>
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {summary.questions.map((q, idx) => {
+                      const rowColor = q.score === 'Full Marks' 
+                        ? 'bg-green-50 hover:bg-green-100' 
+                        : q.score === 'Partial Marks'
+                        ? 'bg-yellow-50 hover:bg-yellow-100'
+                        : 'bg-red-50 hover:bg-red-100'
+                      return (
+                        <TableRow key={q.questionId} className={rowColor}>
+                          <TableCell>{idx + 1}</TableCell>
+                          <TableCell className="font-medium">{q.questionText || 'Question not available'}</TableCell>
+                          <TableCell>{q.studentAnswer}</TableCell>
+                          <TableCell className="font-semibold">{q.correctAnswer}</TableCell>
+                          <TableCell>
+                            <Chip
+                              color={
+                                q.score === 'Full Marks' 
+                                  ? 'success' 
+                                  : q.score === 'Partial Marks'
+                                  ? 'warning'
+                                  : 'danger'
+                              }
+                              variant="flat"
+                              size="sm"
+                            >
+                              {q.score || (q.isCorrect ? 'Correct' : 'Incorrect')}
+                            </Chip>
+                          </TableCell>
+                        </TableRow>
+                      )
+                    })}
                   </TableBody>
                 </Table>
               </div>
