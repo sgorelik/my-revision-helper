@@ -2,6 +2,8 @@
 
 This project uses [Playwright](https://playwright.dev/) for end-to-end (E2E) smoke tests to ensure critical user flows continue to work after UI changes.
 
+> **Note**: For comprehensive testing documentation including unit tests, integration tests, and pytest configuration, see [TESTING.md](../TESTING.md).
+
 ## Quick Start
 
 ### Prerequisites

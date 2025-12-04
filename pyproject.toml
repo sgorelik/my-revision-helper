@@ -19,3 +19,25 @@ packages = ["my_revision_helper"]
 [tool.uv]
 dev-dependencies = []
 
+[tool.pytest.ini_options]
+# Pytest configuration for test discovery and execution
+testpaths = ["."]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",  # Verbose output
+    "--tb=short",  # Short traceback format
+    "--strict-markers",  # Require markers to be registered
+    "--disable-warnings",  # Disable warnings (optional, can be removed)
+]
+markers = [
+    "asyncio: marks tests as async (deselect with '-m \"not asyncio\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "slow: marks tests as slow running",
+    "requires_openai: marks tests that require OPENAI_API_KEY",
+    "requires_pil: marks tests that require PIL/Pillow",
+]
+asyncio_mode = "auto"  # Auto-detect async tests
+

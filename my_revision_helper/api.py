@@ -232,34 +232,71 @@ def get_ai_context() -> str:
     return context
 
 
-def get_marking_context() -> str:
+def get_marking_context(revision_context: Optional[str] = None) -> str:
     """
     Get context specifically for marking/evaluation.
     
-    This is separate from question generation context to ensure marking
-    doesn't include revision-specific content or file knowledge.
+    Args:
+        revision_context: Optional revision description and extracted text from uploaded files.
+                          If provided, marking will be based on what was actually available to the student.
     
     Returns:
         String containing marking-specific instructions with three-tier scoring guidance.
     """
-    return (
+    base_instructions = (
         "You are a fair and thorough tutor grading a student's answer. "
-        "Evaluate the answer based solely on the question asked. "
+        "Evaluate the answer based on what the student was actually expected to know from the provided material. "
         "\n\n"
         "SCORING GUIDELINES:\n"
         "- Full Marks: Award when the answer is completely or nearly correct, demonstrates full understanding, "
-        "and includes all required elements. The answer should be accurate, complete, and show "
-        "clear comprehension of the concept.\n"
+        "and includes all required elements that were available in the revision material. The answer should be "
+        "accurate, complete, and show clear comprehension of the concept as presented in the material.\n"
         "- Partial Marks: Award when the answer shows some understanding but is incomplete, "
-        "partially correct, or missing key elements. Examples include: correct concept but wrong "
-        "details, correct answer but missing explanation, partially correct calculations, or "
-        "correct approach but minor errors.\n"
+        "partially correct, or missing key elements. CRITICAL: If the revision material did not contain "
+        "sufficient depth or detail for the student to have known a specific piece of information, do NOT "
+        "penalize them for missing it. Award Partial Marks if they demonstrate understanding of what WAS "
+        "in the material, even if their answer is incomplete. Examples include: correct concept but wrong "
+        "details (only if those details were in the material), correct answer but missing explanation "
+        "(if explanation was in material), partially correct calculations, or correct approach but minor errors.\n"
         "- Incorrect: Award when the answer is fundamentally wrong, shows misunderstanding of "
-        "the concept, or is completely off-topic. The answer demonstrates little to no understanding.\n"
+        "the concept as presented in the material, or is completely off-topic. The answer demonstrates "
+        "little to no understanding of what was provided.\n"
         "\n"
-        "Be fair but thorough - use Partial Marks generously when students show genuine understanding "
-        "even if the answer isn't perfect. Provide clear explanations for the score awarded."
+        "IMPORTANT FAIRNESS RULES:\n"
+        "- If revision material was provided, use it as a reference, but do NOT restrict answers to only what was in the material.\n"
+        "- CRITICAL: Do NOT penalize students if they provide a correct answer using information NOT in the supplied materials. "
+        "If a student gives a generally correct answer (even if the specific example or detail wasn't in the material), "
+        "award Full Marks. For example, if the PDF discussed specific gases but the student correctly answers with a different "
+        "gas that wasn't mentioned, this is still a correct answer and should receive Full Marks.\n"
+        "- Do NOT penalize students for information that was NOT in the provided revision material when their answer is missing details.\n"
+        "- If the material lacks depth on a topic, be lenient - award Partial Marks or even Full Marks if "
+        "the student demonstrates understanding of what WAS available, even if the answer seems incomplete "
+        "from a general knowledge perspective.\n"
+        "- Be generous with Partial Marks when students show genuine understanding of the provided material, "
+        "even if their answer isn't perfect.\n"
+        "- Award Full Marks for any answer that is generally correct and demonstrates proper understanding, "
+        "regardless of whether the specific information was in the revision material.\n"
+        "\n"
+        "Provide clear explanations for the score awarded, referencing what was (or wasn't) in the revision material."
     )
+    
+    if revision_context:
+        return (
+            f"{base_instructions}\n\n"
+            "REVISION MATERIAL PROVIDED:\n"
+            "The following is the revision material (description and/or extracted text from uploaded files) "
+            "that was available to the student:\n\n"
+            f"{revision_context}\n\n"
+            "When evaluating the student's answer:\n"
+            "- Use the material above as a reference for what was provided, but do NOT restrict correct answers to only what's in the material.\n"
+            "- If a student provides a correct answer using information NOT in the material (e.g., mentions a gas not in the PDF but still correctly answers the question), "
+            "award Full Marks - they demonstrated correct understanding even if from their own knowledge.\n"
+            "- If the student's answer is incomplete but the material itself didn't provide complete information, "
+            "be lenient in your scoring - award Partial Marks or Full Marks based on understanding shown.\n"
+            "- Award marks based on correctness and understanding, not on whether every detail matches the material exactly."
+        )
+    
+    return base_instructions
 
 
 
@@ -267,6 +304,42 @@ def get_marking_context() -> str:
 # ---------- Subject definitions (shared between frontend and backend) ----------
 
 # Valid subjects that can be used to differentiate input/output handling
+def get_marking_json_instructions(subject: Optional[str] = None) -> str:
+    """
+    Get JSON response format instructions for AI marking.
+    
+    This can be customized based on subject or other context to provide
+    subject-specific guidance on response format.
+    
+    Args:
+        subject: Optional subject name (e.g., "Mathematics", "Science") for subject-specific instructions
+    
+    Returns:
+        String containing JSON response format instructions
+    """
+    base_instructions = (
+        "Respond in strict JSON with keys: "
+        "score (string: 'Full Marks', 'Partial Marks', or 'Incorrect'), "
+        "is_correct (boolean: true for Full Marks, false otherwise), "
+        "correct_answer (string), explanation (string). "
+        "IMPORTANT: You MUST always provide an explanation. "
+        "The explanation should clearly justify the score awarded. "
+        "For Partial Marks, explain what was correct and what was missing or incorrect. "
+        "For Incorrect, explain why it's wrong and what the correct answer is. "
+        "For Full Marks, explain why the answer is completely correct. No extra text."
+    )
+    
+    # Subject-specific customizations can be added here
+    if subject:
+        # Example: Mathematics might need specific instructions
+        if subject.lower() in ["mathematics", "math"]:
+            base_instructions += (
+                " For mathematical answers, show working or reasoning when relevant."
+            )
+        # Add more subject-specific instructions as needed
+    
+    return base_instructions
+
 VALID_SUBJECTS = [
     "Mathematics",
     "Science",
@@ -557,19 +630,24 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
 
     This endpoint:
     1. Receives the student's answer
-    2. Uses OpenAI to mark it (if available) or falls back to simple matching
-    3. Returns correctness, correct answer, and explanation
-    4. Stores the result for summary generation
+    2. Retrieves revision context (description + extracted text from uploaded files)
+    3. Uses OpenAI with RAG-style marking - evaluates based on what was actually provided
+    4. Returns score (Full Marks/Partial Marks/Incorrect), correct answer, and explanation
+    5. Stores the result for summary generation
 
     Args:
         run_id: ID of the run this answer belongs to
         payload: AnswerRequest with questionId and answer text
 
     Returns:
-        AnswerResult with marking details
+        AnswerResult with marking details including score field
 
     Note:
-        AI marking uses the general AI_CONTEXT plus question-specific context.
+        AI marking uses RAG (Retrieval Augmented Generation) approach:
+        - Includes revision description and extracted text from uploaded files
+        - Evaluates answers based ONLY on what was actually provided to the student
+        - Does NOT penalize students for information not in the revision material
+        - Awards Partial Marks generously when material lacked depth
         Falls back to simple string matching if OpenAI is unavailable.
     """
     # Try AI-based marking if OpenAI is configured
@@ -580,12 +658,32 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
             question_text = q.get("text", "")
             break
 
+    # Get revision context for RAG-style marking
+    revision_context = None
+    run_data = REVISION_RUNS.get(run_id, {})
+    revision_id = run_data.get("revisionId")
+    if revision_id:
+        rev_def = REVISION_DEFS.get(revision_id, {})
+        # Get the combined description (includes extracted text from files)
+        revision_context = rev_def.get("description") or ""
+        if not revision_context:
+            # Fallback: try to reconstruct from extractedTexts
+            extracted_texts = rev_def.get("extractedTexts", {})
+            if extracted_texts:
+                revision_context = "\n\n".join([
+                    f"Text from {filename}:\n{text}"
+                    for filename, text in extracted_texts.items()
+                ])
+
     # Log diagnostic information
     logger.info(f"Marking request - Question ID: {payload.questionId}, Run ID: {run_id}")
     logger.info(f"OpenAI client available: {client is not None}")
     logger.info(f"Question text found: {bool(question_text)}")
+    logger.info(f"Revision context available: {bool(revision_context)}")
     if question_text:
         logger.info(f"Question text: {question_text[:100]}...")
+    if revision_context:
+        logger.info(f"Revision context length: {len(revision_context)} characters")
     else:
         logger.warning(f"No question text found for questionId {payload.questionId} in run {run_id}")
         logger.warning(f"Available questions in run: {[q.get('id') for q in RUN_QUESTIONS.get(run_id, [])]}")
@@ -597,21 +695,22 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
     
     if client and question_text:
         try:
-            # Use marking-specific context (no revision content or file knowledge)
-            marking_context = get_marking_context()
+            # Use marking context with revision material for RAG-style evaluation
+            marking_context = get_marking_context(revision_context=revision_context)
+            
+            # Get subject for subject-specific JSON instructions
+            subject = None
+            if revision_id:
+                rev_def = REVISION_DEFS.get(revision_id, {})
+                subject = rev_def.get("subject")
+            
+            json_instructions = get_marking_json_instructions(subject=subject)
+            
             prompt = (
                 f"{marking_context}\n\n"
                 "Question: " + question_text + "\n"
                 "Student answer: " + payload.answer + "\n\n"
-                "Respond in strict JSON with keys: "
-                "score (string: 'Full Marks', 'Partial Marks', or 'Incorrect'), "
-                "is_correct (boolean: true for Full Marks, false otherwise), "
-                "correct_answer (string), explanation (string). "
-                "IMPORTANT: You MUST always provide an explanation. "
-                "The explanation should clearly justify the score awarded. "
-                "For Partial Marks, explain what was correct and what was missing or incorrect. "
-                "For Incorrect, explain why it's wrong and what the correct answer is. "
-                "For Full Marks, explain why the answer is completely correct. No extra text."
+                f"{json_instructions}"
             )
             
             # Log full input for debugging
