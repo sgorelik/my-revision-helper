@@ -929,6 +929,13 @@ if os.path.exists(frontend_build_path):
         if full_path.startswith("api/"):
             return {"error": "Not found"}
         
+        # Check if it's a static file (like calculator-logo.png from public folder)
+        # Vite copies files from public/ to dist/ root
+        static_file_path = os.path.join(frontend_build_path, full_path)
+        if os.path.isfile(static_file_path) and full_path != "index.html":
+            logger.info(f"Serving static file: {static_file_path}")
+            return FileResponse(static_file_path)
+        
         # Serve index.html for all frontend routes (React Router handles client-side routing)
         index_path = os.path.join(frontend_build_path, "index.html")
         if os.path.exists(index_path):
