@@ -47,7 +47,8 @@ type Question = {
 type AnswerResult = {
   questionId: string
   studentAnswer: string
-  isCorrect: boolean
+  isCorrect: boolean  // Kept for backward compatibility
+  score: string  // "Full Marks", "Partial Marks", or "Incorrect"
   correctAnswer: string
   explanation?: string | null
   error?: string | null
@@ -171,7 +172,7 @@ function App() {
     subject: '',
     topicsInput: '',
     description: '',
-    desiredQuestionCount: 2,
+    desiredQuestionCount: 10,
     accuracyThreshold: 80,
   })
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
@@ -646,7 +647,15 @@ function App() {
                     </Button>
 
                     {lastResult && (
-                      <Card className={`border-2 rounded-xl shadow-md ${lastResult.error ? 'border-orange-400 bg-gradient-to-r from-orange-50 to-amber-50' : lastResult.isCorrect ? 'border-green-400 bg-gradient-to-r from-green-50 to-emerald-50' : 'border-red-400 bg-gradient-to-r from-red-50 to-rose-50'}`}>
+                      <Card className={`border-2 rounded-xl shadow-md ${
+                        lastResult.error 
+                          ? 'border-orange-400 bg-gradient-to-r from-orange-50 to-amber-50' 
+                          : lastResult.score === 'Full Marks'
+                          ? 'border-green-400 bg-gradient-to-r from-green-50 to-emerald-50'
+                          : lastResult.score === 'Partial Marks'
+                          ? 'border-yellow-400 bg-gradient-to-r from-yellow-50 to-amber-50'
+                          : 'border-red-400 bg-gradient-to-r from-red-50 to-rose-50'
+                      }`}>
                         <CardBody>
                           {lastResult.error ? (
                             <div className="space-y-2">
@@ -665,13 +674,21 @@ function App() {
                           ) : (
                             <>
                               <div className="flex items-center gap-2 mb-3">
-                                {lastResult.isCorrect ? (
+                                {lastResult.score === 'Full Marks' ? (
                                   <CheckCircleIcon className="w-4 h-4 text-green-600" />
+                                ) : lastResult.score === 'Partial Marks' ? (
+                                  <CheckCircleIcon className="w-4 h-4 text-yellow-600" />
                                 ) : (
                                   <XCircleIcon className="w-4 h-4 text-red-600" />
                                 )}
-                                <h4 className={`text-lg font-semibold ${lastResult.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
-                                  {lastResult.isCorrect ? 'Correct!' : 'Incorrect'}
+                                <h4 className={`text-lg font-semibold ${
+                                  lastResult.score === 'Full Marks' 
+                                    ? 'text-green-800' 
+                                    : lastResult.score === 'Partial Marks'
+                                    ? 'text-yellow-800'
+                                    : 'text-red-800'
+                                }`}>
+                                  {lastResult.score || (lastResult.isCorrect ? 'Correct!' : 'Incorrect')}
                                 </h4>
                               </div>
                               <div className="space-y-2">
@@ -758,11 +775,17 @@ function App() {
                         <TableCell className="font-semibold">{q.correctAnswer}</TableCell>
                         <TableCell>
                           <Chip
-                            color={q.isCorrect ? 'success' : 'danger'}
+                            color={
+                              q.score === 'Full Marks' 
+                                ? 'success' 
+                                : q.score === 'Partial Marks'
+                                ? 'warning'
+                                : 'danger'
+                            }
                             variant="flat"
                             size="sm"
                           >
-                            {q.isCorrect ? 'Correct' : 'Incorrect'}
+                            {q.score || (q.isCorrect ? 'Correct' : 'Incorrect')}
                           </Chip>
                         </TableCell>
                       </TableRow>

@@ -147,9 +147,13 @@ def test_submit_answer():
     data = response.json()
     assert data["questionId"] == question_id
     assert data["studentAnswer"] == "4"
-    assert "isCorrect" in data
+    assert "isCorrect" in data  # Backward compatibility
+    assert "score" in data  # New three-tier scoring
+    assert data["score"] in ["Full Marks", "Partial Marks", "Incorrect"]
     assert "correctAnswer" in data
-    print(f"✓ Submitted answer - Correct: {data['isCorrect']}, Expected: {data['correctAnswer']}")
+    # Verify isCorrect matches score
+    assert data["isCorrect"] == (data["score"] == "Full Marks")
+    print(f"✓ Submitted answer - Score: {data['score']}, Correct: {data['isCorrect']}, Expected: {data['correctAnswer']}")
     return run_id
 
 
@@ -166,6 +170,14 @@ def test_get_summary():
     assert len(data["questions"]) > 0
     assert "overallAccuracy" in data
     assert 0 <= data["overallAccuracy"] <= 100
+    
+    # Verify all questions have score field
+    for q in data["questions"]:
+        assert "score" in q
+        assert q["score"] in ["Full Marks", "Partial Marks", "Incorrect"]
+        assert "isCorrect" in q  # Backward compatibility
+        assert q["isCorrect"] == (q["score"] == "Full Marks")
+    
     print(f"✓ Got summary - Accuracy: {data['overallAccuracy']}%, Questions: {len(data['questions'])}")
     return data
 
@@ -203,6 +215,12 @@ def test_full_workflow():
             },
         )
         assert answer_response.status_code == 200
+        answer_data = answer_response.json()
+        # Verify new scoring system
+        assert "score" in answer_data
+        assert answer_data["score"] in ["Full Marks", "Partial Marks", "Incorrect"]
+        assert "isCorrect" in answer_data
+        assert answer_data["isCorrect"] == (answer_data["score"] == "Full Marks")
         questions_answered += 1
     
     # 4. Get summary
@@ -210,6 +228,15 @@ def test_full_workflow():
     assert summary_response.status_code == 200
     summary = summary_response.json()
     assert len(summary["questions"]) == questions_answered
+    
+    # Verify summary includes scores and accuracy calculation accounts for partial marks
+    for q in summary["questions"]:
+        assert "score" in q
+        assert q["score"] in ["Full Marks", "Partial Marks", "Incorrect"]
+    
+    # Verify accuracy is calculated correctly (Full=100%, Partial=50%, Incorrect=0%)
+    expected_max = 100.0 * questions_answered
+    assert 0 <= summary["overallAccuracy"] <= 100
     
     print(f"✓ Full workflow completed - Answered {questions_answered} questions")
     return True
@@ -233,12 +260,16 @@ def test_marking_with_ai():
     )
     assert response.status_code == 200
     data = response.json()
-    assert "isCorrect" in data
+    assert "isCorrect" in data  # Backward compatibility
+    assert "score" in data  # New three-tier scoring
+    assert data["score"] in ["Full Marks", "Partial Marks", "Incorrect"]
     assert "correctAnswer" in data
     assert "explanation" in data
+    # Verify isCorrect matches score
+    assert data["isCorrect"] == (data["score"] == "Full Marks")
     explanation_text = data.get('explanation') or 'N/A'
     explanation_preview = explanation_text[:50] if explanation_text else 'N/A'
-    print(f"✓ AI marking works - Result: {data['isCorrect']}, Explanation: {explanation_preview}...")
+    print(f"✓ AI marking works - Score: {data['score']}, Correct: {data['isCorrect']}, Explanation: {explanation_preview}...")
 
 
 # Pytest markers for optional tests

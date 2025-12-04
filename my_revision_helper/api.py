@@ -110,7 +110,8 @@ class AnswerResult(BaseModel):
 
     questionId: str
     studentAnswer: str
-    isCorrect: bool
+    isCorrect: bool  # Kept for backward compatibility
+    score: str  # "Full Marks", "Partial Marks", or "Incorrect"
     correctAnswer: str
     explanation: Optional[str] = None
     error: Optional[str] = None  # Error message if marking failed
@@ -239,13 +240,25 @@ def get_marking_context() -> str:
     doesn't include revision-specific content or file knowledge.
     
     Returns:
-        String containing marking-specific instructions.
+        String containing marking-specific instructions with three-tier scoring guidance.
     """
     return (
         "You are a fair and thorough tutor grading a student's answer. "
         "Evaluate the answer based solely on the question asked. "
-        "Be fair but thorough - partial credit may be appropriate for partially correct answers. "
-        "Provide clear explanations for why an answer is correct or incorrect."
+        "\n\n"
+        "SCORING GUIDELINES:\n"
+        "- Full Marks: Award when the answer is completely or nearly correct, demonstrates full understanding, "
+        "and includes all required elements. The answer should be accurate, complete, and show "
+        "clear comprehension of the concept.\n"
+        "- Partial Marks: Award when the answer shows some understanding but is incomplete, "
+        "partially correct, or missing key elements. Examples include: correct concept but wrong "
+        "details, correct answer but missing explanation, partially correct calculations, or "
+        "correct approach but minor errors.\n"
+        "- Incorrect: Award when the answer is fundamentally wrong, shows misunderstanding of "
+        "the concept, or is completely off-topic. The answer demonstrates little to no understanding.\n"
+        "\n"
+        "Be fair but thorough - use Partial Marks generously when students show genuine understanding "
+        "even if the answer isn't perfect. Provide clear explanations for the score awarded."
     )
 
 
@@ -590,11 +603,15 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
                 f"{marking_context}\n\n"
                 "Question: " + question_text + "\n"
                 "Student answer: " + payload.answer + "\n\n"
-                "Respond in strict JSON with keys: is_correct (true/false), "
+                "Respond in strict JSON with keys: "
+                "score (string: 'Full Marks', 'Partial Marks', or 'Incorrect'), "
+                "is_correct (boolean: true for Full Marks, false otherwise), "
                 "correct_answer (string), explanation (string). "
                 "IMPORTANT: You MUST always provide an explanation. "
-                "If the answer is incorrect, explain why it's wrong and what the correct answer is. "
-                "If the answer is correct, explain why it's right. No extra text."
+                "The explanation should clearly justify the score awarded. "
+                "For Partial Marks, explain what was correct and what was missing or incorrect. "
+                "For Incorrect, explain why it's wrong and what the correct answer is. "
+                "For Full Marks, explain why the answer is completely correct. No extra text."
             )
             
             # Log full input for debugging
@@ -666,23 +683,41 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
                     logger.error(f"No JSON object found in response: {content[:200]}")
                     raise
             explanation = data.get("explanation") or ""
+            score = data.get("score", "").strip()
             
-            # Ensure we always have an explanation for incorrect answers
-            if not explanation and not bool(data.get("is_correct")):
-                explanation = f"The correct answer is: {data.get('correct_answer', 'N/A')}. Please review the question and try again."
+            # Validate and normalize score
+            valid_scores = ["Full Marks", "Partial Marks", "Incorrect"]
+            if score not in valid_scores:
+                # Try to infer from is_correct if score is missing
+                is_correct = bool(data.get("is_correct"))
+                if is_correct:
+                    score = "Full Marks"
+                else:
+                    # Default to Incorrect if we can't determine
+                    score = "Incorrect"
+                logger.warning(f"Invalid or missing score '{data.get('score')}', inferred '{score}' from is_correct={is_correct}")
             
-            # Ensure we have an explanation even for correct answers (though it's less critical)
+            # Determine is_correct from score (for backward compatibility)
+            is_correct = (score == "Full Marks")
+            
+            # Ensure we always have an explanation
             if not explanation:
-                explanation = "Your answer is correct!" if bool(data.get("is_correct")) else "Please review the correct answer above."
+                if score == "Full Marks":
+                    explanation = "Your answer is completely correct!"
+                elif score == "Partial Marks":
+                    explanation = f"Your answer shows some understanding. The correct answer is: {data.get('correct_answer', 'N/A')}. Review what was missing or incorrect."
+                else:  # Incorrect
+                    explanation = f"The correct answer is: {data.get('correct_answer', 'N/A')}. Please review the question and try again."
             
             result = AnswerResult(
                 questionId=payload.questionId,
                 studentAnswer=payload.answer,
-                isCorrect=bool(data.get("is_correct")),
+                isCorrect=is_correct,
+                score=score,
                 correctAnswer=str(data.get("correct_answer") or ""),
                 explanation=explanation,
             )
-            logger.info(f"Parsed Result: isCorrect={result.isCorrect}, correctAnswer={result.correctAnswer}, explanation={result.explanation}")
+            logger.info(f"Parsed Result: score={result.score}, isCorrect={result.isCorrect}, correctAnswer={result.correctAnswer}")
         except Exception as e:
             # Return error instead of falling back to static content
             error_message = f"Failed to mark answer using AI: {str(e)}"
@@ -692,6 +727,7 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
                 questionId=payload.questionId,
                 studentAnswer=payload.answer,
                 isCorrect=False,
+                score="Incorrect",
                 correctAnswer="",
                 explanation=None,
                 error=error_message,
@@ -709,6 +745,7 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
             questionId=payload.questionId,
             studentAnswer=payload.answer,
             isCorrect=False,
+            score="Incorrect",
             correctAnswer="",
             explanation=None,
             error=error_message,
@@ -727,7 +764,15 @@ async def get_summary(run_id: str):
     answers_raw = RUN_ANSWERS.get(run_id, [])
     answers = [AnswerResult(**a) for a in answers_raw]
     if answers:
-        accuracy = 100.0 * sum(1 for a in answers if a.isCorrect) / len(answers)
+        # Calculate accuracy: Full Marks = 100%, Partial Marks = 50%, Incorrect = 0%
+        total_score = 0.0
+        for a in answers:
+            if a.score == "Full Marks":
+                total_score += 100.0
+            elif a.score == "Partial Marks":
+                total_score += 50.0
+            # Incorrect adds 0
+        accuracy = total_score / len(answers) if answers else 0.0
     else:
         accuracy = 0.0
 
