@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Card,
   CardBody,
@@ -13,6 +13,8 @@ import {
   TableBody,
   TableRow,
   TableCell,
+  Select,
+  SelectItem,
 } from '@heroui/react'
 import {
   DocumentTextIcon,
@@ -117,6 +119,15 @@ async function listRevisions(): Promise<RevisionConfig[]> {
   return res.json()
 }
 
+async function getSubjects(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/subjects`)
+  if (!res.ok) {
+    throw new Error('Failed to load subjects')
+  }
+  const data = await res.json()
+  return data.subjects || []
+}
+
 async function startRun(revisionId: string): Promise<RevisionRun> {
   const res = await fetch(`${API_BASE}/revisions/${revisionId}/runs`, {
     method: 'POST',
@@ -170,12 +181,24 @@ function App() {
 
   // Shared styling for all Input and Textarea components
   const inputClassNames = {
-    label: "mb-2 ml-3",
-    input: "rounded-lg ml-2 pr-2 mb-2 mt-2",
+    label: "mb-2 ml-3 text-blue-600",
+    input: "rounded-lg ml-2 pr-2 mb-2 mt-2 text-gray-700",
     inputWrapper: "rounded-lg border-2 border-blue-200 hover:border-blue-400 pr-4",
-    placeholder: "ml-3"
+    placeholder: "ml-3 text-gray-400"
   }
 
+  // Styling for Select dropdown to match Input components
+  const selectClassNames = {
+    label: "mb-2 ml-3 text-blue-600",
+    trigger: "rounded-lg border-2 border-blue-200 hover:border-blue-400 pr-4 min-h-unit-12",
+    value: "ml-2 pr-2 text-gray-700",
+    popoverContent: "rounded-lg border-2 border-blue-200 bg-white shadow-lg p-3 max-w-full",
+    listbox: "bg-white flex flex-wrap gap-2",
+    listboxItem: "bg-white text-gray-900 w-auto inline-block min-h-0 h-auto",
+  }
+
+  // Subjects list (loaded from backend)
+  const [subjects, setSubjects] = useState<string[]>([])
   const [question, setQuestion] = useState<Question | null>(null)
   const [answer, setAnswer] = useState('')
   const [lastResult, setLastResult] = useState<AnswerResult | null>(null)
@@ -188,6 +211,28 @@ function App() {
       setKnownRevisions(revs)
     } catch (err: any) {
       setError(err.message ?? 'Failed to load revisions')
+    }
+  }
+
+  const loadSubjects = async () => {
+    try {
+      const subjList = await getSubjects()
+      setSubjects(subjList)
+    } catch (err: any) {
+      // Fallback to default subjects if API fails
+      setSubjects([
+        "Mathematics",
+        "Science",
+        "English",
+        "History",
+        "Geography",
+        "Art",
+        "Music",
+        "Physical Education",
+        "Computer Science",
+        "Foreign Languages",
+        "Other"
+      ])
     }
   }
 
@@ -237,6 +282,11 @@ function App() {
       setIsProcessingFiles(false)
     }
   }
+
+  // Load subjects on component mount
+  useEffect(() => {
+    loadSubjects()
+  }, [])
 
   const handleSubmitAnswer = async () => {
     if (!run || !question || !answer.trim()) return
@@ -338,15 +388,29 @@ function App() {
                 variant="bordered"
                 classNames={inputClassNames}
               />
-              <Input
+              <Select
                 label="Subject"
-                placeholder="e.g., Mathematics"
-                value={form.subject}
-                onChange={(e) => onChangeForm('subject', e.target.value)}
+                placeholder="Select a subject"
+                selectedKeys={form.subject ? [form.subject] : []}
+                onSelectionChange={(keys) => {
+                  const selected = Array.from(keys)[0] as string
+                  onChangeForm('subject', selected || '')
+                }}
                 required
                 variant="bordered"
-                classNames={inputClassNames}
-              />
+                classNames={selectClassNames}
+              >
+                {subjects.map((subject) => (
+                  <SelectItem 
+                    key={subject}
+                    classNames={{
+                      base: "border-2 border-blue-200 rounded-md px-3 py-1.5 w-auto inline-block flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-blue-100 data-[hover=true]:border-blue-400 data-[selected=true]:bg-blue-50",
+                    }}
+                  >
+                    {subject}
+                  </SelectItem>
+                ))}
+              </Select>
               <Input
                 label="Topic Areas"
                 placeholder="Fractions, Algebra, Geometry (comma-separated)"
@@ -523,18 +587,14 @@ function App() {
       )}
 
       {revision && (
-        <Card className="rounded-xl border-2 border-emerald-100 shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-emerald-50 to-teal-50 rounded-t-xl">
-            <div className="flex items-center justify-between w-full">
-              <div>
-                <h2 className="text-2xl font-semibold text-emerald-900">Run Revision</h2>
-                <p className="text-sm text-gray-700 mt-1">
-                  <strong className="text-emerald-800">{revision.name}</strong> • <span className="text-teal-700">{revision.subject}</span>
-                </p>
-              </div>
-            </div>
-          </CardHeader>
-          <CardBody>
+        <div className="mb-6">
+          <div className="mb-4">
+            <h2 className="text-2xl font-semibold text-emerald-900 mb-2">Let's Revise!</h2>
+            <p className="text-sm text-gray-700">
+              <strong className="text-emerald-800">{revision.name}</strong> • <span className="text-teal-700">{revision.subject}</span>
+            </p>
+          </div>
+          <div className="rounded-xl border-2 border-emerald-100 shadow-lg bg-white p-6">
             {error && (
               <div className="p-3 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-lg mb-4">
                 <p className="text-sm text-red-800 font-medium">{error}</p>
@@ -571,10 +631,7 @@ function App() {
                       onChange={(e) => setAnswer(e.target.value)}
                       variant="bordered"
                       minRows={4}
-                      classNames={{
-                        input: "rounded-lg",
-                        inputWrapper: "rounded-lg border-2 border-emerald-200 hover:border-emerald-400"
-                      }}
+                      classNames={inputClassNames}
                     />
 
                     <Button
@@ -714,8 +771,8 @@ function App() {
                 </Table>
               </div>
             )}
-          </CardBody>
-        </Card>
+          </div>
+        </div>
       )}
       </div>
     </div>

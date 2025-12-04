@@ -251,12 +251,35 @@ def get_marking_context() -> str:
 
 
 
+# ---------- Subject definitions (shared between frontend and backend) ----------
+
+# Valid subjects that can be used to differentiate input/output handling
+VALID_SUBJECTS = [
+    "Mathematics",
+    "Science",
+    "English",
+    "History",
+    "Geography",
+    "Art",
+    "Music",
+    "Physical Education",
+    "Computer Science",
+    "Foreign Languages",
+    "Other",
+]
+
 # ---------- Endpoints used by the React frontend ----------
 
 @app.get("/api/health")
 async def health():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+@app.get("/api/subjects")
+async def get_subjects():
+    """Get list of valid subjects."""
+    return {"subjects": VALID_SUBJECTS}
 
 
 @app.post("/api/revisions", response_model=RevisionCreateResponse)
