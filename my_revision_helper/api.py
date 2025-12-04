@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import uuid
-from io import BytesIO
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -39,6 +38,7 @@ from pydantic import BaseModel
 from temporalio.client import Client
 
 from .workflows import RevisionWorkflow
+from .file_processing import process_uploaded_files
 
 # Load environment variables from .env file
 load_dotenv()
@@ -113,6 +113,7 @@ class AnswerResult(BaseModel):
     isCorrect: bool
     correctAnswer: str
     explanation: Optional[str] = None
+    error: Optional[str] = None  # Error message if marking failed
 
 
 class RevisionSummary(BaseModel):
@@ -248,134 +249,6 @@ def get_marking_context() -> str:
     )
 
 
-# Maximum file size: 10MB (OpenAI Vision API has limits)
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB in bytes
-
-
-async def extract_text_from_image(file: UploadFile, client: Any) -> Optional[str]:
-    """
-    Extract text from an uploaded image using OpenAI Vision API.
-    
-    Args:
-        file: Uploaded file (should be an image)
-        client: OpenAI client instance
-        
-    Returns:
-        Extracted text, or None if extraction fails
-    """
-    try:
-        # Read file content
-        contents = await file.read()
-        
-        # Check file size
-        if len(contents) > MAX_FILE_SIZE:
-            logger.warning(f"File {file.filename} exceeds maximum size of {MAX_FILE_SIZE / (1024*1024)}MB")
-            return None
-        
-        # Encode to base64 for OpenAI Vision API
-        base64_image = base64.b64encode(contents).decode('utf-8')
-        
-        # Determine image format from content type or file extension
-        content_type = file.content_type or ""
-        if "jpeg" in content_type or "jpg" in content_type:
-            image_format = "image/jpeg"
-        elif "png" in content_type:
-            image_format = "image/png"
-        elif "gif" in content_type:
-            image_format = "image/gif"
-        elif "webp" in content_type:
-            image_format = "image/webp"
-        else:
-            # Try to infer from filename
-            filename = file.filename or ""
-            if filename.lower().endswith(('.jpg', '.jpeg')):
-                image_format = "image/jpeg"
-            elif filename.lower().endswith('.png'):
-                image_format = "image/png"
-            else:
-                image_format = "image/jpeg"  # Default assumption
-        
-        # Use OpenAI Vision API to extract text
-        response = client.chat.completions.create(
-            model="gpt-4o",  # gpt-4o has vision capabilities
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a text extraction assistant. Extract all text from the image accurately, preserving formatting and structure. Return only the extracted text, no explanations.",
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Extract all text from this image. Preserve the structure and formatting as much as possible.",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{image_format};base64,{base64_image}",
-                            },
-                        },
-                    ],
-                },
-            ],
-            max_tokens=2000,
-        )
-        
-        extracted_text = response.choices[0].message.content
-        logger.info(f"Extracted {len(extracted_text)} characters from image {file.filename}")
-        return extracted_text
-        
-    except Exception as e:
-        logger.error(f"Failed to extract text from image {file.filename}: {e}", exc_info=True)
-        return None
-
-
-async def process_uploaded_files(files: List[UploadFile]) -> Dict[str, str]:
-    """
-    Process uploaded files and extract text from images.
-    
-    Args:
-        files: List of uploaded files
-        
-    Returns:
-        Dictionary mapping filename to extracted text
-    """
-    if not files:
-        return {}
-    
-    client = get_openai_client()
-    if not client:
-        logger.warning("OpenAI client not available - cannot extract text from images")
-        return {}
-    
-    extracted_texts = {}
-    skipped_files = []
-    
-    for file in files:
-        # Check if it's an image file
-        content_type = file.content_type or ""
-        filename = file.filename or "unknown"
-        
-        # Check file size before processing
-        # Note: We need to read the file to check size, but we'll read it again in extract_text_from_image
-        # For now, we'll let extract_text_from_image handle the size check
-        
-        if any(img_type in content_type for img_type in ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"]):
-            logger.info(f"Processing image file: {filename}")
-            text = await extract_text_from_image(file, client)
-            if text:
-                extracted_texts[filename] = text
-            else:
-                skipped_files.append(f"{filename} (extraction failed or file too large)")
-        else:
-            skipped_files.append(f"{filename} (not an image file)")
-            logger.warning(f"Skipping non-image file: {filename} (type: {content_type})")
-    
-    if skipped_files:
-        logger.info(f"Skipped {len(skipped_files)} file(s): {', '.join(skipped_files)}")
-    
-    return extracted_texts
 
 
 # ---------- Endpoints used by the React frontend ----------
@@ -419,9 +292,11 @@ async def create_revision(
         RevisionCreateResponse with the created revision's details
 
     Note:
-        Uploaded image files are processed using OpenAI Vision API to extract text.
+        Uploaded files are processed to extract text:
+        - Images (JPEG, PNG, GIF, WebP): Uses OpenAI Vision API for OCR
+        - PDFs: Uses pdfplumber library
+        - PowerPoint (PPTX): Uses python-pptx library
         The extracted text is combined with the description and used for question generation.
-        Supported image formats: JPEG, PNG, GIF, WebP
     """
     topics_list = json.loads(topics) if topics else []
     revision_id = str(uuid.uuid4())
@@ -430,7 +305,8 @@ async def create_revision(
     extracted_texts = {}
     if files:
         logger.info(f"Processing {len(files)} uploaded file(s)")
-        extracted_texts = await process_uploaded_files(files)
+        client = get_openai_client()
+        extracted_texts = await process_uploaded_files(files, client)
         if extracted_texts:
             logger.info(f"Successfully extracted text from {len(extracted_texts)} file(s)")
 
@@ -540,10 +416,13 @@ async def start_run(revision_id: str) -> RevisionRun:
     description = rev_def.get("description") or ""
     desired_count = int(rev_def.get("desiredQuestionCount") or 2)
 
+    error_message = None
     if not client:
-        logger.warning("OpenAI client not available - using fallback questions")
+        error_message = "OpenAI API key not configured. Please set OPENAI_API_KEY environment variable."
+        logger.error(error_message)
     elif not description:
-        logger.warning(f"No description provided for revision {revision_id} - using fallback questions")
+        error_message = "No description provided for this revision. Please add a description or upload files with content."
+        logger.error(error_message)
     else:
         try:
             logger.info(f"Generating {desired_count} questions for revision {revision_id} with description: {description[:100]}...")
@@ -579,10 +458,22 @@ async def start_run(revision_id: str) -> RevisionRun:
                 ]
                 logger.info(f"Successfully generated {len(questions)} questions")
             else:
-                logger.warning("OpenAI returned empty response - using fallback questions")
+                error_message = "OpenAI returned an empty response. Please try again or check your API configuration."
+                logger.error(error_message)
         except Exception as e:
-            # Fall back to default questions on any failure
+            # Return error instead of falling back
+            error_message = f"Failed to generate questions: {str(e)}"
             logger.error(f"OpenAI question generation failed: {e}", exc_info=True)
+    
+    # If there was an error, store it as a special question so it can be displayed
+    if error_message:
+        questions = [
+            {
+                "id": "error",
+                "text": f"ERROR: {error_message}",
+                "error": error_message
+            }
+        ]
 
     RUN_QUESTIONS[run_id] = questions
     RUN_ANSWERS[run_id] = []
@@ -653,6 +544,16 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
             question_text = q.get("text", "")
             break
 
+    # Log diagnostic information
+    logger.info(f"Marking request - Question ID: {payload.questionId}, Run ID: {run_id}")
+    logger.info(f"OpenAI client available: {client is not None}")
+    logger.info(f"Question text found: {bool(question_text)}")
+    if question_text:
+        logger.info(f"Question text: {question_text[:100]}...")
+    else:
+        logger.warning(f"No question text found for questionId {payload.questionId} in run {run_id}")
+        logger.warning(f"Available questions in run: {[q.get('id') for q in RUN_QUESTIONS.get(run_id, [])]}")
+
     if not client:
         logger.warning(f"OpenAI client not available for marking question {payload.questionId} - using fallback")
     elif not question_text:
@@ -667,7 +568,10 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
                 "Question: " + question_text + "\n"
                 "Student answer: " + payload.answer + "\n\n"
                 "Respond in strict JSON with keys: is_correct (true/false), "
-                "correct_answer (string), explanation (string). No extra text."
+                "correct_answer (string), explanation (string). "
+                "IMPORTANT: You MUST always provide an explanation. "
+                "If the answer is incorrect, explain why it's wrong and what the correct answer is. "
+                "If the answer is correct, explain why it's right. No extra text."
             )
             
             # Log full input for debugging
@@ -705,41 +609,86 @@ async def submit_answer(run_id: str, payload: AnswerRequest):
             logger.info(f"Response Length: {len(content)} characters")
             logger.info("=" * 80)
             
-            data = json.loads(content)
+            # Try to parse JSON - OpenAI sometimes wraps it in markdown code blocks
+            json_content = content.strip()
+            
+            # Remove markdown code blocks if present
+            if json_content.startswith("```"):
+                # Extract JSON from code block
+                lines = json_content.split("\n")
+                # Remove first line (```json or ```)
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                # Remove last line (```)
+                if lines and lines[-1].strip() == "```":
+                    lines = lines[:-1]
+                json_content = "\n".join(lines)
+            
+            # Try to find JSON object in the response
+            try:
+                # First, try direct parsing
+                data = json.loads(json_content)
+            except json.JSONDecodeError:
+                # Try to extract JSON object from the text
+                import re
+                json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', json_content, re.DOTALL)
+                if json_match:
+                    try:
+                        data = json.loads(json_match.group(0))
+                        logger.info(f"Extracted JSON from response: {json_match.group(0)[:200]}...")
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to parse extracted JSON: {json_match.group(0)[:200]}")
+                        raise
+                else:
+                    logger.error(f"No JSON object found in response: {content[:200]}")
+                    raise
+            explanation = data.get("explanation") or ""
+            
+            # Ensure we always have an explanation for incorrect answers
+            if not explanation and not bool(data.get("is_correct")):
+                explanation = f"The correct answer is: {data.get('correct_answer', 'N/A')}. Please review the question and try again."
+            
+            # Ensure we have an explanation even for correct answers (though it's less critical)
+            if not explanation:
+                explanation = "Your answer is correct!" if bool(data.get("is_correct")) else "Please review the correct answer above."
+            
             result = AnswerResult(
                 questionId=payload.questionId,
                 studentAnswer=payload.answer,
                 isCorrect=bool(data.get("is_correct")),
                 correctAnswer=str(data.get("correct_answer") or ""),
-                explanation=data.get("explanation") or None,
+                explanation=explanation,
             )
             logger.info(f"Parsed Result: isCorrect={result.isCorrect}, correctAnswer={result.correctAnswer}, explanation={result.explanation}")
         except Exception as e:
-            # Fallback to simple correctness heuristic if parsing or API call fails
+            # Return error instead of falling back to static content
+            error_message = f"Failed to mark answer using AI: {str(e)}"
             logger.error(f"OpenAI marking failed: {e}", exc_info=True)
-            logger.warning("Falling back to simple arithmetic marking")
-            correct_map = {"q1": "4", "q2": "15"}
-            correct_answer = correct_map.get(payload.questionId, "")
-            is_correct = payload.answer.strip() == correct_answer
+            
             result = AnswerResult(
                 questionId=payload.questionId,
                 studentAnswer=payload.answer,
-                isCorrect=bool(correct_answer) and is_correct,
-                correctAnswer=correct_answer,
+                isCorrect=False,
+                correctAnswer="",
                 explanation=None,
+                error=error_message,
             )
     else:
-        # No OpenAI: use simple arithmetic placeholders
-        logger.info(f"Using fallback marking for question {payload.questionId}")
-        correct_map = {"q1": "4", "q2": "15"}
-        correct_answer = correct_map.get(payload.questionId, "")
-        is_correct = payload.answer.strip() == correct_answer
+        # No OpenAI or no question text: return error
+        if not client:
+            error_message = "OpenAI API key not configured. Please set OPENAI_API_KEY environment variable."
+        else:
+            error_message = f"Question text not found for question ID {payload.questionId}. This may indicate a problem with question generation."
+        
+        logger.error(f"Marking failed: {error_message}")
+        
         result = AnswerResult(
             questionId=payload.questionId,
             studentAnswer=payload.answer,
-            isCorrect=bool(correct_answer) and is_correct,
-            correctAnswer=correct_answer,
+            isCorrect=False,
+            correctAnswer="",
             explanation=None,
+            error=error_message,
         )
     
     # Store and return the result

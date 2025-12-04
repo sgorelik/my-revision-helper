@@ -236,7 +236,9 @@ def test_marking_with_ai():
     assert "isCorrect" in data
     assert "correctAnswer" in data
     assert "explanation" in data
-    print(f"✓ AI marking works - Result: {data['isCorrect']}, Explanation: {data.get('explanation', 'N/A')[:50]}...")
+    explanation_text = data.get('explanation') or 'N/A'
+    explanation_preview = explanation_text[:50] if explanation_text else 'N/A'
+    print(f"✓ AI marking works - Result: {data['isCorrect']}, Explanation: {explanation_preview}...")
 
 
 # Pytest markers for optional tests

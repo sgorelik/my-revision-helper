@@ -20,6 +20,9 @@ import {
   CheckCircleIcon,
   XCircleIcon,
   AcademicCapIcon,
+  XMarkIcon,
+  DocumentIcon,
+  PresentationChartBarIcon,
 } from '@heroicons/react/24/outline'
 
 type RevisionConfig = {
@@ -45,6 +48,7 @@ type AnswerResult = {
   isCorrect: boolean
   correctAnswer: string
   explanation?: string | null
+  error?: string | null
 }
 
 type RevisionSummary = {
@@ -357,15 +361,15 @@ function App() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   <PhotoIcon className="w-3.5 h-3.5 inline mr-1 text-pink-600" />
-                  Upload Images (JPEG, PNG) - Text will be extracted automatically
+                  Upload Files - Images, PDFs, PowerPoint (multiple files supported, text will be extracted automatically)
                 </label>
                 <input
                   type="file"
-                  accept="image/jpeg,image/jpg,image/png,image/gif,image/webp"
+                  accept="image/jpeg,image/jpg,image/png,image/gif,image/webp,.pdf,.ppt,.pptx"
                   multiple
                   onChange={(e) => {
                     const files = Array.from(e.target.files || [])
-                    const MAX_SIZE = 10 * 1024 * 1024 // 10MB
+                    const MAX_SIZE = 50 * 1024 * 1024 // 50MB (backend will compress/process as needed)
                     const validFiles: File[] = []
                     const invalidFiles: string[] = []
                     
@@ -377,21 +381,90 @@ function App() {
                       }
                     })
                     
-                    setSelectedFiles(validFiles)
+                    // Add new files to existing selection (allow adding more files)
+                    setSelectedFiles((prev) => {
+                      const combined = [...prev, ...validFiles]
+                      // Remove duplicates by name
+                      const unique = combined.filter((file, index, self) =>
+                        index === self.findIndex((f) => f.name === file.name && f.size === file.size)
+                      )
+                      return unique
+                    })
                     if (invalidFiles.length > 0) {
-                      setError(`Files too large (max 10MB): ${invalidFiles.join(', ')}`)
+                      setError(`Files too large (max 50MB): ${invalidFiles.join(', ')}`)
                     }
                   }}
                   className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-pink-50 file:to-purple-50 file:text-pink-700 hover:file:from-pink-100 hover:file:to-purple-100 file:border-2 file:border-pink-200"
                 />
                 {selectedFiles.length > 0 && (
-                  <div className="mt-2 p-3 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border-2 border-green-200">
-                    <p className="text-sm text-green-800 font-medium">
-                      Selected {selectedFiles.length} file(s): {selectedFiles.map(f => `${f.name} (${(f.size / 1024).toFixed(0)}KB)`).join(', ')}
-                    </p>
+                  <div className="mt-3 p-3 bg-gradient-to-r from-green-50 to-emerald-50 rounded-lg border-2 border-green-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm text-green-800 font-semibold">
+                        {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFiles([])}
+                        className="text-xs text-green-700 hover:text-green-900 underline"
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                      {selectedFiles.map((file, index) => {
+                        const fileName = file.name.toLowerCase()
+                        const isImage = fileName.match(/\.(jpg|jpeg|png|gif|webp)$/)
+                        const isPDF = fileName.endsWith('.pdf')
+                        const isPPT = fileName.match(/\.(ppt|pptx)$/)
+                        
+                        let FileIcon = DocumentIcon
+                        let iconColor = "text-blue-600"
+                        if (isImage) {
+                          FileIcon = PhotoIcon
+                          iconColor = "text-green-600"
+                        } else if (isPDF) {
+                          FileIcon = DocumentIcon
+                          iconColor = "text-red-600"
+                        } else if (isPPT) {
+                          FileIcon = PresentationChartBarIcon
+                          iconColor = "text-orange-600"
+                        }
+                        
+                        return (
+                          <div
+                            key={`${file.name}-${index}`}
+                            className="flex items-center justify-between p-2 bg-white rounded border border-green-200"
+                          >
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <FileIcon className={`w-4 h-4 ${iconColor} flex-shrink-0`} />
+                              <span className="text-xs text-gray-700 truncate" title={file.name}>
+                                {file.name}
+                              </span>
+                              <span className="text-xs text-gray-500 flex-shrink-0">
+                                ({(file.size / 1024).toFixed(0)}KB)
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedFiles((prev) => prev.filter((_, i) => i !== index))
+                              }}
+                              className="ml-2 p-1 hover:bg-red-50 rounded text-red-600 hover:text-red-800 flex-shrink-0"
+                              title="Remove file"
+                            >
+                              <XMarkIcon className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
-                <p className="text-xs text-gray-500 mt-1">Maximum file size: 10MB per file</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Supported formats: Images (JPEG, PNG, GIF, WebP), PDFs, PowerPoint (PPT, PPTX). 
+                  Maximum file size: 50MB per file (images will be automatically compressed if needed). 
+                  You can select multiple files at once or add more files.
+                </p>
               </div>
 
               <div className="grid grid-cols-2 gap-4">
@@ -471,12 +544,24 @@ function App() {
               <>
                 {question ? (
                   <div className="space-y-4">
-                    <Card className="bg-gradient-to-r from-indigo-50 to-blue-50 border-2 border-indigo-300 rounded-xl shadow-md">
-                      <CardBody>
-                        <h3 className="text-lg font-semibold mb-2 text-indigo-900">Question</h3>
-                        <p className="text-gray-700 text-lg">{question.text}</p>
-                      </CardBody>
-                    </Card>
+                    {question.text.startsWith('ERROR:') ? (
+                      <Card className="bg-gradient-to-r from-orange-50 to-amber-50 border-2 border-orange-300 rounded-xl shadow-md">
+                        <CardBody>
+                          <div className="flex items-center gap-2 mb-2">
+                            <XCircleIcon className="w-5 h-5 text-orange-600" />
+                            <h3 className="text-lg font-semibold text-orange-900">Error Generating Questions</h3>
+                          </div>
+                          <p className="text-orange-800 text-base">{question.text.replace('ERROR: ', '')}</p>
+                        </CardBody>
+                      </Card>
+                    ) : (
+                      <Card className="bg-gradient-to-r from-indigo-50 to-blue-50 border-2 border-indigo-300 rounded-xl shadow-md">
+                        <CardBody>
+                          <h3 className="text-lg font-semibold mb-2 text-indigo-900">Question</h3>
+                          <p className="text-gray-700 text-lg">{question.text}</p>
+                        </CardBody>
+                      </Card>
+                    )}
 
                     <Textarea
                       label="Your Answer"
@@ -503,31 +588,49 @@ function App() {
                     </Button>
 
                     {lastResult && (
-                      <Card className={`border-2 rounded-xl shadow-md ${lastResult.isCorrect ? 'border-green-400 bg-gradient-to-r from-green-50 to-emerald-50' : 'border-red-400 bg-gradient-to-r from-red-50 to-rose-50'}`}>
+                      <Card className={`border-2 rounded-xl shadow-md ${lastResult.error ? 'border-orange-400 bg-gradient-to-r from-orange-50 to-amber-50' : lastResult.isCorrect ? 'border-green-400 bg-gradient-to-r from-green-50 to-emerald-50' : 'border-red-400 bg-gradient-to-r from-red-50 to-rose-50'}`}>
                         <CardBody>
-                          <div className="flex items-center gap-2 mb-3">
-                            {lastResult.isCorrect ? (
-                              <CheckCircleIcon className="w-4 h-4 text-green-600" />
-                            ) : (
-                              <XCircleIcon className="w-4 h-4 text-red-600" />
-                            )}
-                            <h4 className={`text-lg font-semibold ${lastResult.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
-                              {lastResult.isCorrect ? 'Correct!' : 'Incorrect'}
-                            </h4>
-                          </div>
-                          <div className="space-y-2">
-                            <p className="text-gray-700">
-                              <span className="font-medium">Correct answer:</span>{' '}
-                              <span className="font-semibold text-gray-900">{lastResult.correctAnswer}</span>
-                            </p>
-                            {lastResult.explanation && (
-                              <div className="mt-3 p-3 bg-white rounded-lg border-2 border-gray-200">
-                                <p className="text-sm text-gray-700">
-                                  <span className="font-medium">Explanation:</span> {lastResult.explanation}
+                          {lastResult.error ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2 mb-3">
+                                <XCircleIcon className="w-5 h-5 text-orange-600" />
+                                <h4 className="text-lg font-semibold text-orange-800">
+                                  Error Marking Answer
+                                </h4>
+                              </div>
+                              <div className="mt-3 p-3 bg-white rounded-lg border-2 border-orange-200">
+                                <p className="text-sm text-orange-800 font-medium">
+                                  {lastResult.error}
                                 </p>
                               </div>
-                            )}
-                          </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-2 mb-3">
+                                {lastResult.isCorrect ? (
+                                  <CheckCircleIcon className="w-4 h-4 text-green-600" />
+                                ) : (
+                                  <XCircleIcon className="w-4 h-4 text-red-600" />
+                                )}
+                                <h4 className={`text-lg font-semibold ${lastResult.isCorrect ? 'text-green-800' : 'text-red-800'}`}>
+                                  {lastResult.isCorrect ? 'Correct!' : 'Incorrect'}
+                                </h4>
+                              </div>
+                              <div className="space-y-2">
+                                <p className="text-gray-700">
+                                  <span className="font-medium">Correct answer:</span>{' '}
+                                  <span className="font-semibold text-gray-900">{lastResult.correctAnswer}</span>
+                                </p>
+                                {lastResult.explanation && (
+                                  <div className="mt-3 p-3 bg-white rounded-lg border-2 border-gray-200">
+                                    <p className="text-sm text-gray-700">
+                                      <span className="font-medium">Explanation:</span> {lastResult.explanation}
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            </>
+                          )}
                           <Button
                             onClick={handleNextQuestion}
                             color="primary"

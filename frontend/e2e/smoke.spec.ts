@@ -72,10 +72,17 @@ test.describe('Revision Helper - Smoke Tests', () => {
     await page.getByRole('button', { name: /Submit Answer/i }).click();
     
     // Wait for the result to appear - use heading role to find the result status
-    await expect(page.getByRole('heading', { name: /^(Correct!|Incorrect)$/i })).toBeVisible({ timeout: 10000 });
+    const resultHeading = page.getByRole('heading', { name: /^(Correct!|Incorrect)$/i });
+    await expect(resultHeading).toBeVisible({ timeout: 10000 });
     
     // Verify we can see the correct answer
     await expect(page.getByText(/Correct answer:/i)).toBeVisible();
+    
+    // If the answer is incorrect, verify explanation is shown
+    const isIncorrect = await resultHeading.textContent().then(text => text?.toLowerCase().includes('incorrect'));
+    if (isIncorrect) {
+      await expect(page.getByText(/Explanation:/i)).toBeVisible();
+    }
   });
 
   // TODO: Fix and enable summary test once summary workflow is finalized
