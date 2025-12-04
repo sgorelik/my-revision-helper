@@ -63,8 +63,9 @@ type RevisionRun = {
   status: string
 }
 
-// API base URL - uses environment variable if set, otherwise defaults to localhost for dev
-// When served from same domain (production), use relative path
+// API base URL - uses environment variable if set, otherwise defaults to relative path
+// Vite proxy forwards /api to http://localhost:8000 in development
+// In production, backend serves frontend from same domain, so relative path works
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 async function createRevision(
@@ -91,14 +92,28 @@ async function createRevision(
     body: formData,
   })
   if (!res.ok) {
-    throw new Error('Failed to create revision')
+    const errorText = await res.text()
+    let errorMessage = 'Failed to create revision'
+    try {
+      const errorJson = JSON.parse(errorText)
+      errorMessage = errorJson.detail || errorMessage
+    } catch {
+      errorMessage = errorText || errorMessage
+    }
+    throw new Error(errorMessage)
   }
   return res.json()
 }
 
 async function listRevisions(): Promise<RevisionConfig[]> {
   const res = await fetch(`${API_BASE}/revisions`)
-  if (!res.ok) throw new Error('Failed to load revisions')
+  if (!res.ok) {
+    // 404 is OK - means no revisions exist yet
+    if (res.status === 404) {
+      return []
+    }
+    throw new Error('Failed to load revisions')
+  }
   return res.json()
 }
 
@@ -152,6 +167,14 @@ function App() {
   const [isCreating, setIsCreating] = useState(false)
   const [isProcessingFiles, setIsProcessingFiles] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // Shared styling for all Input and Textarea components
+  const inputClassNames = {
+    label: "mb-2 ml-3",
+    input: "rounded-lg ml-2 pr-2 mb-2 mt-2",
+    inputWrapper: "rounded-lg border-2 border-blue-200 hover:border-blue-400 pr-4",
+    placeholder: "ml-3"
+  }
 
   const [question, setQuestion] = useState<Question | null>(null)
   const [answer, setAnswer] = useState('')
@@ -253,7 +276,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
-      <div className="max-w-4xl mx-auto px-4 py-8">
+      <div className="max-w-6xl ml-8 mr-auto px-4 py-8">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-900 mb-2 flex items-center justify-center gap-2">
             <AcademicCapIcon className="w-5 h-5 text-indigo-600" />
@@ -300,15 +323,12 @@ function App() {
       )}
 
       {!revision && (
-        <Card className="mb-6 rounded-xl border-2 border-indigo-100 shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-indigo-50 to-blue-50 rounded-t-xl">
-            <h2 className="text-2xl font-semibold flex items-center gap-2 text-indigo-900">
-              <DocumentTextIcon className="w-4 h-4 text-indigo-600" />
-              Set Up a Revision
-            </h2>
-          </CardHeader>
-          <CardBody>
-            <form onSubmit={handleCreateRevision} className="space-y-4">
+        <div className="mb-6 rounded-xl border-2 border-indigo-100 shadow-lg bg-gradient-to-r from-pink-50 to-cyan-50 p-6">
+          <h2 className="text-2xl font-semibold flex items-center gap-2 text-indigo-900 mb-4">
+            <DocumentTextIcon className="w-4 h-4 text-indigo-600" />
+            Set Up a Revision
+          </h2>
+          <form onSubmit={handleCreateRevision} className="space-y-4 w-full">
               <Input
                 label="Revision Name"
                 placeholder="e.g., Math Test Prep"
@@ -316,10 +336,7 @@ function App() {
                 onChange={(e) => onChangeForm('name', e.target.value)}
                 required
                 variant="bordered"
-                classNames={{
-                  input: "rounded-lg",
-                  inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
-                }}
+                classNames={inputClassNames}
               />
               <Input
                 label="Subject"
@@ -328,10 +345,7 @@ function App() {
                 onChange={(e) => onChangeForm('subject', e.target.value)}
                 required
                 variant="bordered"
-                classNames={{
-                  input: "rounded-lg",
-                  inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
-                }}
+                classNames={inputClassNames}
               />
               <Input
                 label="Topic Areas"
@@ -340,10 +354,7 @@ function App() {
                 onChange={(e) => onChangeForm('topicsInput', e.target.value)}
                 variant="bordered"
                 description="Separate multiple topics with commas"
-                classNames={{
-                  input: "rounded-lg",
-                  inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
-                }}
+                classNames={inputClassNames}
               />
               <Textarea
                 label="Description"
@@ -352,13 +363,10 @@ function App() {
                 onChange={(e) => onChangeForm('description', e.target.value)}
                 variant="bordered"
                 minRows={3}
-                classNames={{
-                  input: "rounded-lg",
-                  inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
-                }}
+                classNames={inputClassNames}
               />
               
-              <div>
+      <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   <PhotoIcon className="w-3.5 h-3.5 inline mr-1 text-pink-600" />
                   Upload Files - Images, PDFs, PowerPoint (multiple files supported, text will be extracted automatically)
@@ -477,10 +485,7 @@ function App() {
                     onChangeForm('desiredQuestionCount', Number(e.target.value))
                   }
                   variant="bordered"
-                  classNames={{
-                    input: "rounded-lg",
-                    inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
-                  }}
+                  classNames={inputClassNames}
                 />
                 <Input
                   type="number"
@@ -492,17 +497,14 @@ function App() {
                     onChangeForm('accuracyThreshold', Number(e.target.value))
                   }
                   variant="bordered"
-                  classNames={{
-                    input: "rounded-lg",
-                    inputWrapper: "rounded-lg border-2 border-indigo-200 hover:border-indigo-400"
-                  }}
+                  classNames={inputClassNames}
                 />
               </div>
 
               {error && (
                 <div className="p-3 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-lg">
                   <p className="text-sm text-red-800 font-medium">{error}</p>
-                </div>
+      </div>
               )}
 
               <button
@@ -515,10 +517,9 @@ function App() {
                   : isCreating
                   ? 'Creating...'
                   : 'Create Revision'}
-              </button>
+        </button>
             </form>
-          </CardBody>
-        </Card>
+        </div>
       )}
 
       {revision && (
@@ -625,8 +626,8 @@ function App() {
                                   <div className="mt-3 p-3 bg-white rounded-lg border-2 border-gray-200">
                                     <p className="text-sm text-gray-700">
                                       <span className="font-medium">Explanation:</span> {lastResult.explanation}
-                                    </p>
-                                  </div>
+        </p>
+      </div>
                                 )}
                               </div>
                             </>

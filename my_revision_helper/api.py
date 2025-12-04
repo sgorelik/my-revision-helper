@@ -327,7 +327,7 @@ async def create_revision(
             RevisionWorkflow.run,
             revision_id,  # task_id
             name,  # title
-            combined_description or None,  # description
+            combined_description or None,  # description (optional)
             id=revision_id,
             task_queue=os.getenv("TEMPORAL_TASK_QUEUE", "revision-helper-queue"),
         )
