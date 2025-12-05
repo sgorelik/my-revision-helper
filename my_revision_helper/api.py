@@ -162,7 +162,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.on_event("startup")
 async def startup_event():
     """Initialize database tables on application startup."""
-    init_db()
+    logger.info("🚀 Application startup - initializing database...")
+    try:
+        init_db()
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database on startup: {e}", exc_info=True)
 
 # CORS configuration - can be set via ALLOWED_ORIGINS env var (comma-separated)
 # For Railway deployment, Railway will provide a domain like *.railway.app

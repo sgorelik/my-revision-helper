@@ -27,15 +27,16 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Only create engine if DATABASE_URL is set
 if DATABASE_URL:
     try:
+        logger.info(f"Creating database engine with DATABASE_URL: {DATABASE_URL[:50]}...")  # Log first 50 chars for security
         engine = create_engine(DATABASE_URL, pool_pre_ping=True)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-        logger.info("Database connection configured")
+        logger.info("✅ Database connection configured successfully")
     except Exception as e:
-        logger.warning(f"Failed to configure database: {e}")
+        logger.error(f"❌ Failed to configure database: {e}", exc_info=True)
         engine = None
         SessionLocal = None
 else:
-    logger.info("DATABASE_URL not set - database features disabled")
+    logger.warning("⚠️ DATABASE_URL not set - database features disabled")
     engine = None
     SessionLocal = None
 
@@ -65,10 +66,18 @@ def get_db() -> Generator[Optional[sessionmaker], None, None]:
 
 def init_db():
     """Create all database tables if database is configured."""
+    logger.info(f"init_db() called - DATABASE_URL is {'SET' if DATABASE_URL else 'NOT SET'}")
+    logger.info(f"init_db() called - engine is {'SET' if engine else 'NOT SET'}")
+    
     if engine:
-        from .models_db import User, Revision, RevisionRun, RunQuestion, RunAnswer
-        Base.metadata.create_all(bind=engine)
-        logger.info("Database tables initialized")
+        try:
+            from .models_db import User, Revision, RevisionRun, RunQuestion, RunAnswer
+            logger.info("Importing models for table creation...")
+            Base.metadata.create_all(bind=engine)
+            logger.info("✅ Database tables initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to create database tables: {e}", exc_info=True)
+            raise
     else:
-        logger.info("Database not configured - skipping table creation")
+        logger.warning("⚠️ Database not configured - skipping table creation (engine is None)")
 
