@@ -610,10 +610,10 @@ async def start_run(
     # Get revision data for question generation
     rev_def = revision
 
-    # Default fallback questions
+    # Default fallback questions (use run_id to ensure unique IDs)
     questions: List[dict] = [
-        {"id": "q1", "text": "What is 2 + 2?"},
-        {"id": "q2", "text": "What is 3 × 5?"},
+        {"id": f"{run_id}-q1", "text": "What is 2 + 2?"},
+        {"id": f"{run_id}-q2", "text": "What is 3 × 5?"},
     ]
 
     # If OpenAI is configured, try to generate questions from the revision description
@@ -658,7 +658,7 @@ async def start_run(
             lines = [ln for ln in lines if ln]
             if lines:
                 questions = [
-                    {"id": f"q{i+1}", "text": text}
+                    {"id": f"{run_id}-q{i+1}", "text": text}
                     for i, text in enumerate(lines[:desired_count])
                 ]
                 logger.info(f"Successfully generated {len(questions)} questions")

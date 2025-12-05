@@ -13,9 +13,13 @@ import json
 import os
 from io import BytesIO
 from typing import Dict, Any
+from dotenv import load_dotenv
 
 import pytest
 from fastapi.testclient import TestClient
+
+# Load environment variables
+load_dotenv()
 
 # Try to import PIL for image creation (optional)
 try:
@@ -270,6 +274,147 @@ def test_marking_with_ai():
     explanation_text = data.get('explanation') or 'N/A'
     explanation_preview = explanation_text[:50] if explanation_text else 'N/A'
     print(f"✓ AI marking works - Score: {data['score']}, Correct: {data['isCorrect']}, Explanation: {explanation_preview}...")
+
+
+@pytest.mark.integration
+def test_revision_persisted_to_database():
+    """
+    Test that revisions are persisted to the database when DATABASE_URL is set.
+    
+    This test verifies:
+    1. Revision creation via API
+    2. Revision is stored in database (not just in-memory)
+    3. Revision can be retrieved from database
+    """
+    # Check if database is configured
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        pytest.skip("DATABASE_URL not set - skipping database persistence test")
+    
+    # Create a revision via API
+    revision_data = {
+        "name": "Database Test Revision",
+        "subject": "Mathematics",
+        "description": "Test revision for database persistence",
+        "desiredQuestionCount": "3",
+        "accuracyThreshold": "75",
+        "topics": "[]",
+    }
+    
+    response = client.post(
+        "/api/revisions",
+        data=revision_data,
+    )
+    
+    assert response.status_code == 200, f"Failed to create revision: {response.text}"
+    created_revision = response.json()
+    revision_id = created_revision["id"]
+    
+    assert revision_id is not None
+    assert created_revision["name"] == revision_data["name"]
+    
+    # Verify revision is in database
+    try:
+        from my_revision_helper.database import get_db, engine
+        from my_revision_helper.models_db import Revision
+        
+        if not engine:
+            pytest.skip("Database engine not available")
+        
+        # Get database session
+        db_gen = get_db()
+        db = next(db_gen)
+        
+        if not db:
+            pytest.skip("Database session not available")
+        
+        # Query database directly
+        db_revision = db.query(Revision).filter(Revision.id == revision_id).first()
+        
+        assert db_revision is not None, f"Revision {revision_id} not found in database"
+        assert db_revision.name == revision_data["name"]
+        assert db_revision.subject == revision_data["subject"]
+        assert db_revision.desired_question_count == int(revision_data["desiredQuestionCount"])
+        assert db_revision.accuracy_threshold == int(revision_data["accuracyThreshold"])
+        
+        # Clean up - close database session
+        db_gen.close()
+        
+        print(f"✓ Revision {revision_id} successfully persisted to database")
+        
+    except ImportError:
+        pytest.skip("Database modules not available")
+    except Exception as e:
+        pytest.fail(f"Database verification failed: {e}")
+
+
+@pytest.mark.integration
+def test_anonymous_revision_persisted_with_session_id():
+    """
+    Test that anonymous user revisions are persisted with session_id.
+    
+    This test verifies:
+    1. Anonymous revision creation (no auth token)
+    2. Revision stored with session_id (not user_id)
+    3. Revision can be retrieved by session_id
+    """
+    # Check if database is configured
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        pytest.skip("DATABASE_URL not set - skipping database persistence test")
+    
+    # Create a revision without authentication (anonymous)
+    revision_data = {
+        "name": "Anonymous Test Revision",
+        "subject": "Science",
+        "description": "Test revision for anonymous user",
+        "desiredQuestionCount": "2",
+        "accuracyThreshold": "80",
+        "topics": "[]",
+    }
+    
+    # Make request - TestClient handles cookies automatically
+    response = client.post(
+        "/api/revisions",
+        data=revision_data,
+    )
+    
+    assert response.status_code == 200, f"Failed to create revision: {response.text}"
+    created_revision = response.json()
+    revision_id = created_revision["id"]
+    
+    # Verify revision is in database with session_id
+    try:
+        from my_revision_helper.database import get_db, engine
+        from my_revision_helper.models_db import Revision
+        
+        if not engine:
+            pytest.skip("Database engine not available")
+        
+        db_gen = get_db()
+        db = next(db_gen)
+        
+        if not db:
+            pytest.skip("Database session not available")
+        
+        # Query database for revision
+        db_revision = db.query(Revision).filter(
+            Revision.id == revision_id
+        ).first()
+        
+        assert db_revision is not None, f"Revision {revision_id} not found in database"
+        assert db_revision.user_id is None, "Anonymous revision should not have user_id"
+        assert db_revision.session_id is not None, "Anonymous revision should have session_id"
+        assert db_revision.name == revision_data["name"]
+        
+        db_gen.close()
+        
+        print(f"✓ Anonymous revision {revision_id} persisted with session_id {db_revision.session_id}")
+        
+    except ImportError:
+        pytest.skip("Database modules not available")
+    except Exception as e:
+        pytest.fail(f"Database verification failed: {e}")
 
 
 # Pytest markers for optional tests

@@ -12,6 +12,13 @@ from typing import Optional, Generator
 import os
 import logging
 
+# Load environment variables from .env file (must be before reading DATABASE_URL)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv is optional
+
 logger = logging.getLogger(__name__)
 
 # Get DATABASE_URL from environment (Railway provides this automatically)
