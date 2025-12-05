@@ -35,18 +35,24 @@ When running Python scripts to test things out, **automatically add them as prop
 - Fast, no external dependencies
 - Use mocks for external services (OpenAI, database, etc.)
 - Example: `test_file_processing.py`
+- Create a unit test whenever you add a new non-trivial method, before moving forward
+- Run unit tests for specific modules when that module is modified
+- All unit tests should be passing before any git commit
 
 **Integration Tests** (`test_*.py` with `@pytest.mark.integration`):
 - Test multiple components working together
 - May require external services (database, API server)
 - Test full workflows/end-to-end scenarios
 - Example: `test_api_scenarios.py`
+- Run integration tests when underlying components are modified , for example API changes, changes to DB persistence layer etc
+- All integration tests should be passing before any git push
 
 **E2E Tests** (`test_*.py` with `@pytest.mark.integration` or `@pytest.mark.e2e`):
 - Test complete user flows
 - Require full stack running (API server, database)
 - Can be slower, may require setup/teardown
 - Example: `test_e2e_smoke.py` (should be converted to pytest)
+- All E2E tests should be passing at least once a day, or when we talk about deploying to railway.app
 
 ### Test File Naming
 - Unit tests: `test_<module_name>.py` (e.g., `test_file_processing.py`)
