@@ -823,9 +823,16 @@ function App() {
 
                     <Textarea
                       label="Your Answer"
-                      placeholder="Type your answer here..."
+                      placeholder="Type your answer here... (Press Enter to submit, Shift+Enter for new line)"
                       value={answer}
                       onChange={(e) => setAnswer(e.target.value)}
+                      onKeyDown={(e) => {
+                        // Submit on Enter (but not Shift+Enter, which creates a new line)
+                        if (e.key === 'Enter' && !e.shiftKey && answer.trim() && !isSubmittingAnswer) {
+                          e.preventDefault()
+                          handleSubmitAnswer()
+                        }
+                      }}
                       variant="bordered"
                       minRows={4}
                       classNames={inputClassNames}
