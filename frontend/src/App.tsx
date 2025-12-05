@@ -544,14 +544,18 @@ function App() {
       )}
 
       {!revision && (
-        <div className="mb-6 rounded-xl border-2 border-orange-100 shadow-lg bg-gradient-to-r from-yellow-50 to-orange-50 p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <h2 className="text-2xl font-semibold flex items-center gap-2 text-orange-900">
-              <DocumentTextIcon className="w-10 h-10 text-orange-600" />
-              Set Up a Revision
-            </h2>
+        <div className="mb-6">
+          <div className="mb-4 flex items-start gap-3">
+            <Logo size="md" className="flex-shrink-0" />
+            <div>
+              <h2 className="text-2xl font-semibold text-orange-900 mb-2">Set Up a Revision</h2>
+              <p className="text-sm text-gray-700">
+                Create a new revision session with questions tailored to your study materials
+              </p>
+            </div>
           </div>
-          <form onSubmit={handleCreateRevision} className="space-y-4 w-full">
+          <div className="rounded-xl border-2 border-orange-100 shadow-lg bg-white p-6">
+            <form onSubmit={handleCreateRevision} className="space-y-4 w-full">
               <Input
                 label="Revision Name"
                 placeholder="e.g., Math Test Prep"
@@ -755,6 +759,7 @@ function App() {
                   : 'Create Revision'}
         </button>
             </form>
+          </div>
         </div>
       )}
 
