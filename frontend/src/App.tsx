@@ -210,6 +210,15 @@ function App() {
   // Auth hook - works with or without Auth0 configured
   const { user, isAuthenticated, isLoading: authLoading, login, logout, getToken } = useAuth()
   
+  // Debug: Log Auth0 env var status
+  useEffect(() => {
+    const hasAuth0Domain = !!import.meta.env.VITE_AUTH0_DOMAIN
+    console.log('Auth0 Domain configured:', hasAuth0Domain, hasAuth0Domain ? import.meta.env.VITE_AUTH0_DOMAIN : 'NOT SET')
+    if (!hasAuth0Domain) {
+      console.warn('⚠️ VITE_AUTH0_DOMAIN is not set - login button will not appear')
+    }
+  }, [])
+  
   const [revision, setRevision] = useState<RevisionConfig | null>(null)
   const [run, setRun] = useState<RevisionRun | null>(null)
   const [knownRevisions, setKnownRevisions] = useState<RevisionConfig[]>([])

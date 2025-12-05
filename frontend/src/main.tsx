@@ -9,6 +9,17 @@ const domain = import.meta.env.VITE_AUTH0_DOMAIN
 const clientId = import.meta.env.VITE_AUTH0_CLIENT_ID
 const audience = import.meta.env.VITE_AUTH0_AUDIENCE
 
+// Debug: Log Auth0 config (only in development or if explicitly enabled)
+if (import.meta.env.DEV || import.meta.env.VITE_DEBUG_AUTH0) {
+  console.log('Auth0 Configuration:', {
+    domain: domain || 'NOT SET',
+    clientId: clientId ? `${clientId.substring(0, 10)}...` : 'NOT SET',
+    audience: audience || 'NOT SET',
+    hasDomain: !!domain,
+    hasClientId: !!clientId,
+  })
+}
+
 // Auth0 is optional - only wrap with Auth0Provider if configured
 const AppWithAuth = domain && clientId ? (
   <Auth0Provider
