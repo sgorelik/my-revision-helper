@@ -545,15 +545,19 @@ function App() {
 
       {!revision && (
         <div className="mb-6">
-          <div className="mb-4 flex items-start gap-3">
-            <Logo size="md" className="flex-shrink-0" />
-            <div>
-              <h2 className="text-2xl font-semibold text-orange-900 mb-2">Set Up a Revision</h2>
-              <p className="text-sm text-gray-700">
-                Create a new revision session with questions tailored to your study materials
-              </p>
-            </div>
-          </div>
+          <Card className="rounded-xl border-2 border-orange-100 shadow-lg bg-white mb-4">
+            <CardBody className="p-6">
+              <div className="flex items-start gap-3">
+                <DocumentTextIcon className="w-12 h-12 text-orange-600 flex-shrink-0" />
+                <div>
+                  <h2 className="text-2xl font-semibold text-orange-900 mb-2">Set Up a Revision</h2>
+                  <p className="text-sm text-gray-700">
+                    Create a new revision session with questions tailored to your study materials
+                  </p>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
           <div className="rounded-xl border-2 border-orange-100 shadow-lg bg-white p-6">
             <form onSubmit={handleCreateRevision} className="space-y-4 w-full">
               <Input
