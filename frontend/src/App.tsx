@@ -26,6 +26,7 @@ import {
   PresentationChartBarIcon,
 } from '@heroicons/react/24/outline'
 import Logo from './Logo'
+import { useAuth } from './auth'
 
 type RevisionConfig = {
   id?: string
@@ -74,7 +75,8 @@ const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 async function createRevision(
   config: RevisionConfig,
-  files?: File[]
+  files?: File[],
+  token?: string | null
 ): Promise<RevisionConfig> {
   const formData = new FormData()
   formData.append('name', config.name)
@@ -91,8 +93,14 @@ async function createRevision(
     })
   }
 
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
   const res = await fetch(`${API_BASE}/revisions`, {
     method: 'POST',
+    headers,
     body: formData,
   })
   if (!res.ok) {
@@ -109,8 +117,12 @@ async function createRevision(
   return res.json()
 }
 
-async function listRevisions(): Promise<RevisionConfig[]> {
-  const res = await fetch(`${API_BASE}/revisions`)
+async function listRevisions(token?: string | null): Promise<RevisionConfig[]> {
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${API_BASE}/revisions`, { headers })
   if (!res.ok) {
     // 404 is OK - means no revisions exist yet
     if (res.status === 404) {
@@ -130,23 +142,36 @@ async function getSubjects(): Promise<string[]> {
   return data.subjects || []
 }
 
-async function startRun(revisionId: string): Promise<RevisionRun> {
+async function startRun(revisionId: string, token?: string | null): Promise<RevisionRun> {
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
   const res = await fetch(`${API_BASE}/revisions/${revisionId}/runs`, {
     method: 'POST',
+    headers,
   })
   if (!res.ok) throw new Error('Failed to start run')
   return res.json()
 }
 
-async function getNextQuestion(runId: string): Promise<Question | null> {
-  const res = await fetch(`${API_BASE}/runs/${runId}/next-question`)
+async function getNextQuestion(runId: string, token?: string | null): Promise<Question | null> {
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${API_BASE}/runs/${runId}/next-question`, { headers })
   if (!res.ok) throw new Error('Failed to load question')
   const data = await res.json()
   return data ? { id: data.id, text: data.text } : null
 }
 
-async function getQuestionCount(runId: string): Promise<number> {
-  const res = await fetch(`${API_BASE}/runs/${runId}/question-count`)
+async function getQuestionCount(runId: string, token?: string | null): Promise<number> {
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${API_BASE}/runs/${runId}/question-count`, { headers })
   if (!res.ok) return 0
   const data = await res.json()
   return data.totalQuestions || 0
@@ -156,23 +181,35 @@ async function submitAnswer(
   runId: string,
   questionId: string,
   answer: string,
+  token?: string | null
 ): Promise<AnswerResult> {
+  const headers: HeadersInit = { 'Content-Type': 'application/json' }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
   const res = await fetch(`${API_BASE}/runs/${runId}/answers`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ questionId, answer }),
   })
   if (!res.ok) throw new Error('Failed to submit answer')
   return res.json()
 }
 
-async function getRunSummary(runId: string): Promise<RevisionSummary> {
-  const res = await fetch(`${API_BASE}/runs/${runId}/summary`)
+async function getRunSummary(runId: string, token?: string | null): Promise<RevisionSummary> {
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${API_BASE}/runs/${runId}/summary`, { headers })
   if (!res.ok) throw new Error('Failed to load summary')
   return res.json()
 }
 
 function App() {
+  // Auth hook - works with or without Auth0 configured
+  const { user, isAuthenticated, isLoading: authLoading, login, logout, getToken } = useAuth()
+  
   const [revision, setRevision] = useState<RevisionConfig | null>(null)
   const [run, setRun] = useState<RevisionRun | null>(null)
   const [knownRevisions, setKnownRevisions] = useState<RevisionConfig[]>([])
@@ -220,7 +257,8 @@ function App() {
 
   const loadRevisions = async () => {
     try {
-      const revs = await listRevisions()
+      const token = await getToken()
+      const revs = await listRevisions(token)
       setKnownRevisions(revs)
     } catch (err: any) {
       setError(err.message ?? 'Failed to load revisions')
@@ -259,6 +297,7 @@ function App() {
     setIsCreating(true)
     setIsProcessingFiles(selectedFiles.length > 0)
     try {
+      const token = await getToken()
       const topics = form.topicsInput
         .split(',')
         .map((t) => t.trim())
@@ -272,20 +311,21 @@ function App() {
           desiredQuestionCount: form.desiredQuestionCount,
           accuracyThreshold: form.accuracyThreshold,
         },
-        selectedFiles.length > 0 ? selectedFiles : undefined
+        selectedFiles.length > 0 ? selectedFiles : undefined,
+        token
       )
       setRevision(created)
 
       // Start a run for this revision and load the first question
-      const newRun = await startRun(created.id!)
+      const newRun = await startRun(created.id!, token)
       setRun(newRun)
 
       // Get total question count and set initial question number
-      const total = await getQuestionCount(newRun.id)
+      const total = await getQuestionCount(newRun.id, token)
       setTotalQuestions(total)
       setCurrentQuestionNumber(1)
 
-      const q = await getNextQuestion(newRun.id)
+      const q = await getNextQuestion(newRun.id, token)
       setQuestion(q)
       setAnswer('')
       setLastResult(null)
@@ -311,7 +351,8 @@ function App() {
     setIsSubmittingAnswer(true)
     setError(null)
     try {
-      const res = await submitAnswer(run.id, question.id, answer)
+      const token = await getToken()
+      const res = await submitAnswer(run.id, question.id, answer, token)
       setLastResult(res)
     } catch (err: any) {
       setError(err.message ?? 'Failed to submit answer')
@@ -324,7 +365,8 @@ function App() {
     if (!run) return
     setIsLoadingQuestion(true)
     try {
-      const q = await getNextQuestion(run.id)
+      const token = await getToken()
+      const q = await getNextQuestion(run.id, token)
       setQuestion(q)
       setAnswer('')
       setLastResult(null)
@@ -341,7 +383,8 @@ function App() {
   const handleFinishEarly = async () => {
     if (!run) return
     try {
-      const s = await getRunSummary(run.id)
+      const token = await getToken()
+      const s = await getRunSummary(run.id, token)
       setSummary(s)
       setQuestion(null)
       setAnswer('')
@@ -354,7 +397,8 @@ function App() {
   const handleLoadSummary = async () => {
     if (!run) return
     try {
-      const s = await getRunSummary(run.id)
+      const token = await getToken()
+      const s = await getRunSummary(run.id, token)
       setSummary(s)
     } catch (err: any) {
       setError(err.message ?? 'Failed to load summary')
@@ -372,8 +416,73 @@ function App() {
     }
   }, [run, question, summary, totalQuestions])
 
+  // Show loading state while Auth0 initializes (only if Auth0 is configured)
+  if (authLoading && import.meta.env.VITE_AUTH0_DOMAIN) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-yellow-50 to-orange-50 flex items-center justify-center">
+        <div className="text-center">
+          <Logo size="xl" />
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-yellow-50 to-orange-50">
+      {/* Authentication Banner */}
+      {!isAuthenticated && import.meta.env.VITE_AUTH0_DOMAIN && (
+        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <p className="text-sm text-yellow-700">
+                  <strong>Session-only mode:</strong> Your revisions and progress will not be saved after you close this page.{' '}
+                  <button 
+                    onClick={login}
+                    className="font-medium underline hover:text-yellow-900"
+                  >
+                    Sign in to save your work
+                  </button>
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={login}
+              className="ml-4 bg-yellow-400 hover:bg-yellow-500 text-yellow-900 px-4 py-2 rounded-lg font-semibold"
+            >
+              Sign In
+            </button>
+          </div>
+        </div>
+      )}
+      
+      {isAuthenticated && user && (
+        <div className="bg-green-50 border-l-4 border-green-400 p-3 mb-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {user.picture && (
+                <img src={user.picture} alt={user.name || user.email} className="w-8 h-8 rounded-full" />
+              )}
+              <span className="text-sm text-green-800">
+                Signed in as <strong>{user.name || user.email}</strong> - Your work is being saved
+              </span>
+            </div>
+            <button
+              onClick={logout}
+              className="text-sm text-green-700 hover:text-green-900 underline"
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="max-w-6xl ml-8 mr-auto px-4 py-8">
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-3 mb-2">
@@ -866,13 +975,23 @@ function App() {
                   </TableHeader>
                   <TableBody>
                     {summary.questions.map((q, idx) => {
-                      const rowColor = q.score === 'Full Marks' 
+                      const rowColorClass = q.score === 'Full Marks' 
                         ? 'bg-green-50 hover:bg-green-100' 
                         : q.score === 'Partial Marks'
                         ? 'bg-yellow-50 hover:bg-yellow-100'
                         : 'bg-red-50 hover:bg-red-100'
                       return (
-                        <TableRow key={q.questionId} className={rowColor}>
+                        <TableRow 
+                          key={q.questionId} 
+                          className={rowColorClass}
+                          style={{
+                            backgroundColor: q.score === 'Full Marks' 
+                              ? '#f0fdf4' 
+                              : q.score === 'Partial Marks'
+                              ? '#fefce8'
+                              : '#fef2f2'
+                          }}
+                        >
                           <TableCell>{idx + 1}</TableCell>
                           <TableCell className="font-medium">{q.questionText || 'Question not available'}</TableCell>
                           <TableCell>{q.studentAnswer}</TableCell>
