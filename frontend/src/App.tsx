@@ -441,7 +441,7 @@ function App() {
     <div className="min-h-screen bg-gradient-to-br from-yellow-50 to-orange-50">
       {/* Authentication Banner */}
       {!isAuthenticated && import.meta.env.VITE_AUTH0_DOMAIN && (
-        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+        <div className="bg-gradient-to-r from-yellow-50 via-amber-50 to-orange-50 border-l-4 border-yellow-400 p-4 mb-4 shadow-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center">
               <div className="flex-shrink-0">
@@ -463,7 +463,7 @@ function App() {
             </div>
             <button
               onClick={login}
-              className="ml-4 bg-yellow-400 hover:bg-yellow-500 text-yellow-900 px-4 py-2 rounded-lg font-semibold"
+              className="ml-4 bg-gradient-to-r from-yellow-400 to-orange-400 hover:from-yellow-500 hover:to-orange-500 text-yellow-900 px-4 py-2 rounded-lg font-semibold shadow-md transition-all"
             >
               Sign In
             </button>
@@ -472,7 +472,7 @@ function App() {
       )}
       
       {isAuthenticated && user && (
-        <div className="bg-green-50 border-l-4 border-green-400 p-3 mb-4">
+        <div className="bg-gradient-to-r from-green-50 via-emerald-50 to-cyan-50 border-l-4 border-green-400 p-3 mb-4 shadow-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               {user.picture && (
@@ -496,11 +496,11 @@ function App() {
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-3 mb-2">
             <Logo size="lg" />
-            <h1 className="text-4xl font-bold text-gray-900">
-              My Revision Helper
+            <h1 className="text-4xl font-bold text-blue-600">
+              My Revision Pal
             </h1>
           </div>
-          <p className="text-gray-600">AI-powered study companion for effective learning</p>
+          <p className="text-blue-400">AI-powered study companion for effective learning</p>
         </div>
 
       {knownRevisions.length > 0 && !revision && (
@@ -546,9 +546,8 @@ function App() {
       {!revision && (
         <div className="mb-6 rounded-xl border-2 border-orange-100 shadow-lg bg-gradient-to-r from-yellow-50 to-orange-50 p-6">
           <div className="flex items-center gap-3 mb-4">
-            <Logo size="md" />
             <h2 className="text-2xl font-semibold flex items-center gap-2 text-orange-900">
-              <DocumentTextIcon className="w-4 h-4 text-orange-600" />
+              <DocumentTextIcon className="w-10 h-10 text-orange-600" />
               Set Up a Revision
             </h2>
           </div>
@@ -591,7 +590,6 @@ function App() {
                 value={form.topicsInput}
                 onChange={(e) => onChangeForm('topicsInput', e.target.value)}
                 variant="bordered"
-                description="Separate multiple topics with commas"
                 classNames={inputClassNames}
               />
               <Textarea
@@ -786,9 +784,9 @@ function App() {
                     <p className="text-center text-lg font-semibold text-orange-700">
                       Question {currentQuestionNumber} of {totalQuestions}
                     </p>
-                    <div className="mt-2 w-full bg-blue-200 rounded-full h-2.5">
+                    <div className="mt-2 w-full bg-gradient-to-r from-blue-200 via-cyan-200 to-blue-300 rounded-full h-2.5 shadow-inner">
                       <div 
-                        className="bg-orange-600 h-2.5 rounded-full transition-all duration-300"
+                        className="bg-gradient-to-r from-orange-500 via-orange-600 to-red-600 h-2.5 rounded-full transition-all duration-300 shadow-sm"
                         style={{ width: `${(currentQuestionNumber / totalQuestions) * 100}%` }}
                       ></div>
                     </div>
@@ -985,10 +983,10 @@ function App() {
                   <TableBody>
                     {summary.questions.map((q, idx) => {
                       const rowColorClass = q.score === 'Full Marks' 
-                        ? 'bg-green-50 hover:bg-green-100' 
+                        ? 'bg-gradient-to-r from-green-50 via-emerald-50 to-green-100 hover:from-green-100 hover:via-emerald-100 hover:to-green-200' 
                         : q.score === 'Partial Marks'
-                        ? 'bg-yellow-50 hover:bg-yellow-100'
-                        : 'bg-red-50 hover:bg-red-100'
+                        ? 'bg-gradient-to-r from-yellow-50 via-amber-50 to-yellow-100 hover:from-yellow-100 hover:via-amber-100 hover:to-yellow-200'
+                        : 'bg-gradient-to-r from-red-50 via-rose-50 to-red-100 hover:from-red-100 hover:via-rose-100 hover:to-red-200'
                       return (
                         <TableRow 
                           key={q.questionId} 
