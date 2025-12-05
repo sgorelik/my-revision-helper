@@ -328,3 +328,82 @@ class StorageAdapter:
         else:
             # In-memory storage
             return self._answers.get(run_id, [])
+    
+    def list_completed_runs(self) -> List[dict]:
+        """List all completed runs with revision info and summary data."""
+        if self.use_database:
+            # Get all runs for this user/session
+            if self.is_authenticated:
+                runs = self.db.query(RevisionRun).filter(
+                    RevisionRun.user_id == self.user["user_id"]
+                ).order_by(RevisionRun.created_at.desc()).all()
+            else:
+                runs = self.db.query(RevisionRun).filter(
+                    RevisionRun.session_id == self.session_id
+                ).order_by(RevisionRun.created_at.desc()).all()
+            
+            completed_runs = []
+            for run in runs:
+                # Check if run has answers (completed)
+                answers = self.db.query(RunAnswer).filter(
+                    RunAnswer.run_id == run.id
+                ).all()
+                
+                if answers:
+                    # Get revision info
+                    revision = self.db.query(Revision).filter(
+                        Revision.id == run.revision_id
+                    ).first()
+                    
+                    if revision:
+                        # Calculate score
+                        total_score = 0.0
+                        for a in answers:
+                            if a.score == "Full Marks":
+                                total_score += 100.0
+                            elif a.score == "Partial Marks":
+                                total_score += 50.0
+                        accuracy = total_score / len(answers) if answers else 0.0
+                        
+                        completed_runs.append({
+                            "runId": run.id,
+                            "revisionId": revision.id,
+                            "revisionName": revision.name,
+                            "subject": revision.subject,
+                            "completedAt": run.created_at.isoformat(),
+                            "score": accuracy,
+                            "totalQuestions": len(answers),
+                        })
+            
+            return completed_runs
+        else:
+            # In-memory storage - check which runs have answers
+            completed_runs = []
+            for run_id, run_data in self._runs.items():
+                answers = self._answers.get(run_id, [])
+                if answers:
+                    revision_id = run_data.get("revisionId")
+                    revision = self._revisions.get(revision_id) if revision_id else None
+                    
+                    if revision:
+                        # Calculate score
+                        total_score = 0.0
+                        for a in answers:
+                            score = a.get("score", "Incorrect")
+                            if score == "Full Marks":
+                                total_score += 100.0
+                            elif score == "Partial Marks":
+                                total_score += 50.0
+                        accuracy = total_score / len(answers) if answers else 0.0
+                        
+                        completed_runs.append({
+                            "runId": run_id,
+                            "revisionId": revision_id,
+                            "revisionName": revision.get("name", "Unknown"),
+                            "subject": revision.get("subject", "Unknown"),
+                            "completedAt": run_data.get("createdAt", ""),
+                            "score": accuracy,
+                            "totalQuestions": len(answers),
+                        })
+            
+            return completed_runs

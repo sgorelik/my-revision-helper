@@ -417,6 +417,85 @@ def test_anonymous_revision_persisted_with_session_id():
         pytest.fail(f"Database verification failed: {e}")
 
 
+@pytest.mark.integration
+def test_list_completed_runs():
+    """
+    Test the /api/runs/completed endpoint.
+    
+    This test verifies:
+    1. Creating a revision and completing a run
+    2. Submitting at least one answer (to mark run as completed)
+    3. Listing completed runs returns the completed run with correct data
+    4. Completed run includes revision name, subject, score, and question count
+    """
+    # Create a revision
+    revision_id = test_create_revision_basic()
+    
+    # Start a run
+    run_response = client.post(f"/api/revisions/{revision_id}/runs")
+    assert run_response.status_code == 200
+    run_data = run_response.json()
+    run_id = run_data["id"]
+    
+    # Get and answer at least one question to mark the run as completed
+    question_response = client.get(f"/api/runs/{run_id}/next-question")
+    assert question_response.status_code == 200
+    question = question_response.json()
+    question_id = question["id"]
+    
+    # Submit an answer
+    answer_response = client.post(
+        f"/api/runs/{run_id}/answers",
+        json={
+            "questionId": question_id,
+            "answer": "test answer",
+        },
+    )
+    assert answer_response.status_code == 200
+    answer_data = answer_response.json()
+    assert "score" in answer_data
+    
+    # Now list completed runs
+    completed_response = client.get("/api/runs/completed")
+    assert completed_response.status_code == 200
+    completed_runs = completed_response.json()
+    
+    # Verify response is a list
+    assert isinstance(completed_runs, list), "Response should be a list"
+    
+    # Find our completed run
+    our_run = None
+    for run in completed_runs:
+        if run["runId"] == run_id:
+            our_run = run
+            break
+    
+    # Verify our run is in the list
+    assert our_run is not None, f"Run {run_id} should be in completed runs list"
+    
+    # Verify the structure of completed run data
+    assert "runId" in our_run
+    assert "revisionId" in our_run
+    assert "revisionName" in our_run
+    assert "subject" in our_run
+    assert "completedAt" in our_run
+    assert "score" in our_run
+    assert "totalQuestions" in our_run
+    
+    # Verify values
+    assert our_run["runId"] == run_id
+    assert our_run["revisionId"] == revision_id
+    assert our_run["revisionName"] == "Test Revision"
+    assert our_run["subject"] == "Mathematics"
+    assert our_run["totalQuestions"] == 1  # We answered one question
+    assert 0 <= our_run["score"] <= 100  # Score should be a percentage
+    
+    print(f"✓ Completed runs endpoint works - Found {len(completed_runs)} completed run(s)")
+    print(f"  Run {run_id}: {our_run['revisionName']} - Score: {our_run['score']:.1f}%")
+    
+    return completed_runs
+
+
 # Pytest markers for optional tests
 if HAS_PIL:
     test_create_revision_with_files = pytest.mark.skipif(not HAS_PIL, reason="PIL/Pillow not installed")(test_create_revision_with_files)

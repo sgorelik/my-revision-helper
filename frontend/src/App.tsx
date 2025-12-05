@@ -62,6 +62,16 @@ type RevisionSummary = {
   overallAccuracy: number
 }
 
+type CompletedRun = {
+  runId: string
+  revisionId: string
+  revisionName: string
+  subject: string
+  completedAt: string
+  score: number
+  totalQuestions: number
+}
+
 type RevisionRun = {
   id: string
   revisionId: string
@@ -206,6 +216,21 @@ async function getRunSummary(runId: string, token?: string | null): Promise<Revi
   return res.json()
 }
 
+async function listCompletedRuns(token?: string | null): Promise<CompletedRun[]> {
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${API_BASE}/runs/completed`, { headers })
+  if (!res.ok) {
+    if (res.status === 404) {
+      return []
+    }
+    throw new Error('Failed to load completed runs')
+  }
+  return res.json()
+}
+
 function App() {
   // Auth hook - works with or without Auth0 configured
   const { user, isAuthenticated, isLoading: authLoading, login, logout, getToken } = useAuth()
@@ -222,6 +247,8 @@ function App() {
   const [revision, setRevision] = useState<RevisionConfig | null>(null)
   const [run, setRun] = useState<RevisionRun | null>(null)
   const [knownRevisions, setKnownRevisions] = useState<RevisionConfig[]>([])
+  const [completedRuns, setCompletedRuns] = useState<CompletedRun[]>([])
+  const [showRevisionList, setShowRevisionList] = useState(false)
   const [form, setForm] = useState({
     name: '',
     subject: '',
@@ -271,6 +298,16 @@ function App() {
       setKnownRevisions(revs)
     } catch (err: any) {
       setError(err.message ?? 'Failed to load revisions')
+    }
+  }
+
+  const loadCompletedRuns = async () => {
+    try {
+      const token = await getToken()
+      const runs = await listCompletedRuns(token)
+      setCompletedRuns(runs)
+    } catch (err: any) {
+      setError(err.message ?? 'Failed to load completed runs')
     }
   }
 
@@ -326,20 +363,24 @@ function App() {
       setRevision(created)
 
       // Start a run for this revision and load the first question
-      const newRun = await startRun(created.id!, token)
-      setRun(newRun)
+      if (created.id) {
+        const newRun = await startRun(created.id, token)
+        setRun(newRun)
+        setShowRevisionList(false)
 
-      // Get total question count and set initial question number
-      const total = await getQuestionCount(newRun.id, token)
-      setTotalQuestions(total)
-      setCurrentQuestionNumber(1)
+        // Get total question count and set initial question number
+        const total = await getQuestionCount(newRun.id, token)
+        setTotalQuestions(total)
+        setCurrentQuestionNumber(1)
 
-      const q = await getNextQuestion(newRun.id, token)
-      setQuestion(q)
-      setAnswer('')
-      setLastResult(null)
-      setSummary(null)
-      await loadRevisions()
+        const q = await getNextQuestion(newRun.id, token)
+        setQuestion(q)
+        setAnswer('')
+        setLastResult(null)
+        setSummary(null)
+        await loadRevisions()
+        await loadCompletedRuns()
+      }
       // Clear selected files after successful creation
       setSelectedFiles([])
     } catch (err: any) {
@@ -398,9 +439,60 @@ function App() {
       setQuestion(null)
       setAnswer('')
       setLastResult(null)
+      // Reload completed runs after finishing
+      await loadCompletedRuns()
     } catch (err: any) {
       setError(err.message ?? 'Failed to load summary')
     }
+  }
+
+  const handleLaunchRevision = async (revisionId: string) => {
+    try {
+      setError(null)
+      const token = await getToken()
+      const newRun = await startRun(revisionId, token)
+      const rev = knownRevisions.find(r => r.id === revisionId)
+      if (rev) {
+        setRevision(rev)
+        setRun(newRun)
+        setShowRevisionList(false)
+        // Load question count and first question
+        const count = await getQuestionCount(newRun.id, token)
+        setTotalQuestions(count)
+        setCurrentQuestionNumber(1)
+        const q = await getNextQuestion(newRun.id, token)
+        setQuestion(q)
+      }
+    } catch (err: any) {
+      setError(err.message ?? 'Failed to start revision')
+    }
+  }
+
+  const handleViewSummary = async (runId: string) => {
+    try {
+      setError(null)
+      const token = await getToken()
+      const s = await getRunSummary(runId, token)
+      setSummary(s)
+      setRevision(null)
+      setRun(null)
+      setQuestion(null)
+      setShowRevisionList(false)
+    } catch (err: any) {
+      setError(err.message ?? 'Failed to load summary')
+    }
+  }
+
+  const handleBackToHome = () => {
+    setRevision(null)
+    setRun(null)
+    setQuestion(null)
+    setSummary(null)
+    setAnswer('')
+    setLastResult(null)
+    setCurrentQuestionNumber(0)
+    setTotalQuestions(0)
+    setShowRevisionList(true)
   }
 
   const handleLoadSummary = async () => {
@@ -424,6 +516,24 @@ function App() {
       return () => clearTimeout(timer)
     }
   }, [run, question, summary, totalQuestions])
+
+  // Load revisions and completed runs on mount and when auth state changes
+  useEffect(() => {
+    if (!authLoading) {
+      loadRevisions()
+      loadCompletedRuns()
+      setShowRevisionList(true)
+    }
+  }, [authLoading, isAuthenticated])
+
+  // Load revisions and completed runs on mount and when auth state changes
+  useEffect(() => {
+    if (!authLoading) {
+      loadRevisions()
+      loadCompletedRuns()
+      setShowRevisionList(true)
+    }
+  }, [authLoading, isAuthenticated])
 
   // Show loading state while Auth0 initializes (only if Auth0 is configured)
   if (authLoading && import.meta.env.VITE_AUTH0_DOMAIN) {
@@ -503,44 +613,118 @@ function App() {
           <p className="text-blue-400">AI-powered study companion for effective learning</p>
         </div>
 
-      {knownRevisions.length > 0 && !revision && (
-        <Card className="mb-6 rounded-xl border-2 border-orange-100 shadow-lg">
-          <CardHeader className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-t-xl">
-            <div className="flex items-center gap-3">
-              <Logo size="sm" />
-              <h2 className="text-2xl font-semibold text-orange-900">Existing Revisions</h2>
-            </div>
-          </CardHeader>
-          <CardBody>
-            <div className="space-y-3">
-              {knownRevisions.map((r) => (
-                <Card key={r.id} className="border-2 border-orange-200 hover:shadow-lg transition-all hover:border-orange-400 rounded-lg bg-gradient-to-r from-yellow-50 to-cyan-50">
-                  <CardBody>
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <h3 className="font-semibold text-lg text-gray-900">{r.name}</h3>
-                        <Chip size="sm" variant="flat" color="secondary" className="mt-1 rounded-full">
-                          {r.subject}
-                        </Chip>
-                        {r.uploadedFiles && r.uploadedFiles.length > 0 && (
-                          <div className="flex items-center gap-1 mt-2 text-sm text-gray-600">
-                            <PhotoIcon className="w-3 h-3 text-cyan-600" />
-                            <span>Files: {r.uploadedFiles.join(', ')}</span>
+      {/* Revision Lists View */}
+      {showRevisionList && !revision && !summary && (
+        <div className="space-y-6">
+          {/* Configured Revisions */}
+          {knownRevisions.length > 0 && (
+            <Card className="rounded-xl border-2 border-orange-100 shadow-lg">
+              <CardHeader className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-t-xl">
+                <div className="flex items-center gap-3">
+                  <DocumentTextIcon className="w-6 h-6 text-orange-600" />
+                  <h2 className="text-2xl font-semibold text-orange-900">Configured Revisions</h2>
+                </div>
+              </CardHeader>
+              <CardBody>
+                <div className="space-y-3">
+                  {knownRevisions.map((r) => (
+                    <Card key={r.id} className="border-2 border-orange-200 hover:shadow-lg transition-all hover:border-orange-400 rounded-lg bg-gradient-to-r from-yellow-50 to-cyan-50">
+                      <CardBody>
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-lg text-gray-900">{r.name}</h3>
+                            <Chip size="sm" variant="flat" color="secondary" className="mt-1 rounded-full">
+                              {r.subject}
+                            </Chip>
+                            {r.uploadedFiles && r.uploadedFiles.length > 0 && (
+                              <div className="flex items-center gap-1 mt-2 text-sm text-gray-600">
+                                <PhotoIcon className="w-3 h-3 text-cyan-600" />
+                                <span>Files: {r.uploadedFiles.join(', ')}</span>
+                              </div>
+                            )}
+                            {r.extractedTextPreview && (
+                              <p className="text-sm text-gray-500 italic mt-2 line-clamp-2">
+                                "{r.extractedTextPreview}"
+                              </p>
+                            )}
                           </div>
-                        )}
-                        {r.extractedTextPreview && (
-                          <p className="text-sm text-gray-500 italic mt-2 line-clamp-2">
-                            "{r.extractedTextPreview}"
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </CardBody>
-                </Card>
-              ))}
-            </div>
-          </CardBody>
-        </Card>
+                          <Button
+                            onClick={() => r.id && handleLaunchRevision(r.id)}
+                            color="primary"
+                            size="md"
+                            className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 shadow-md"
+                            isDisabled={!r.id}
+                          >
+                            Start
+                          </Button>
+                        </div>
+                      </CardBody>
+                    </Card>
+                  ))}
+                </div>
+              </CardBody>
+            </Card>
+          )}
+
+          {/* Completed Revisions */}
+          {completedRuns.length > 0 && (
+            <Card className="rounded-xl border-2 border-green-100 shadow-lg">
+              <CardHeader className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-t-xl">
+                <div className="flex items-center gap-3">
+                  <CheckCircleIcon className="w-6 h-6 text-green-600" />
+                  <h2 className="text-2xl font-semibold text-green-900">Completed Revisions</h2>
+                </div>
+              </CardHeader>
+              <CardBody>
+                <div className="space-y-3">
+                  {completedRuns.map((completed) => (
+                    <Card key={completed.runId} className="border-2 border-green-200 hover:shadow-lg transition-all hover:border-green-400 rounded-lg bg-gradient-to-r from-green-50 to-cyan-50">
+                      <CardBody>
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-lg text-gray-900">{completed.revisionName}</h3>
+                            <Chip size="sm" variant="flat" color="success" className="mt-1 rounded-full">
+                              {completed.subject}
+                            </Chip>
+                            <div className="mt-2 flex items-center gap-4 text-sm">
+                              <span className="text-gray-700">
+                                <strong>Score:</strong> {completed.score.toFixed(1)}%
+                              </span>
+                              <span className="text-gray-600">
+                                <strong>Questions:</strong> {completed.totalQuestions}
+                              </span>
+                              <span className="text-gray-500 text-xs">
+                                {new Date(completed.completedAt).toLocaleDateString()}
+                              </span>
+                            </div>
+                          </div>
+                          <Button
+                            onClick={() => handleViewSummary(completed.runId)}
+                            color="success"
+                            size="md"
+                            className="ml-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 shadow-md"
+                          >
+                            View Summary
+                          </Button>
+                        </div>
+                      </CardBody>
+                    </Card>
+                  ))}
+                </div>
+              </CardBody>
+            </Card>
+          )}
+
+          {/* Show message if no revisions */}
+          {knownRevisions.length === 0 && completedRuns.length === 0 && (
+            <Card className="rounded-xl border-2 border-gray-200 shadow-lg bg-white">
+              <CardBody className="text-center py-8">
+                <DocumentTextIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <p className="text-gray-600">No revisions yet. Create one below to get started!</p>
+              </CardBody>
+            </Card>
+          )}
+        </div>
       )}
 
       {!revision && (
@@ -976,6 +1160,16 @@ function App() {
 
             {summary && (
               <div className="space-y-4">
+                <div className="flex items-center justify-between mb-4">
+                  <Button
+                    onClick={handleBackToHome}
+                    color="secondary"
+                    variant="flat"
+                    className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700"
+                  >
+                    ← Back to Revisions
+                  </Button>
+                </div>
                 <Card className="bg-gradient-to-r from-orange-500 via-red-600 to-orange-600 text-white rounded-xl shadow-xl border-2 border-orange-300">
                   <CardBody>
                     <div className="flex items-center gap-3 mb-2">

@@ -139,6 +139,18 @@ class RevisionRun(BaseModel):
     status: str
 
 
+class CompletedRun(BaseModel):
+    """A completed revision run with summary data."""
+
+    runId: str
+    revisionId: str
+    revisionName: str
+    subject: str
+    completedAt: str
+    score: float
+    totalQuestions: int
+
+
 # ---------- FastAPI app setup ----------
 
 app = FastAPI()
@@ -752,6 +764,20 @@ async def list_runs(
     # Note: This endpoint is not heavily used in the frontend
     # For now, return empty list - can be enhanced later if needed
     return []
+
+
+@app.get("/api/runs/completed", response_model=List[CompletedRun])
+async def list_completed_runs(
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+) -> List[CompletedRun]:
+    """
+    List all completed runs with summary data (revision name, score, etc.).
+    """
+    storage = StorageAdapter(user, db, session_id)
+    completed_runs = storage.list_completed_runs()
+    return [CompletedRun(**run) for run in completed_runs]
 
 
 @app.get("/api/runs/{run_id}/question-count")
