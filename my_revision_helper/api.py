@@ -30,10 +30,11 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, UploadFile, Depends, Cookie, Response
+from fastapi import FastAPI, File, Form, UploadFile, Depends, Cookie, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel
 from temporalio.client import Client
 from sqlalchemy.orm import Session
@@ -141,6 +142,21 @@ class RevisionRun(BaseModel):
 # ---------- FastAPI app setup ----------
 
 app = FastAPI()
+
+# Add validation error handler for better debugging
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Log validation errors for debugging."""
+    logger.error(f"Validation error on {request.url.path}: {exc.errors()}")
+    try:
+        body = await request.body()
+        logger.error(f"Request body: {body.decode()[:500] if body else 'Empty'}")
+    except Exception:
+        logger.error("Could not read request body")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": str(exc.body) if hasattr(exc, 'body') else None}
+    )
 
 # Initialize database on startup
 @app.on_event("startup")
