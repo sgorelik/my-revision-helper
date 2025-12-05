@@ -15,15 +15,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def get_or_create_user(db: Session, user_id: str, email: str, name: Optional[str] = None) -> User:
+def get_or_create_user(db: Session, user_id: str, email: Optional[str] = None, name: Optional[str] = None) -> User:
     """Get or create a user in the database."""
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
-        user = User(id=user_id, email=email, name=name)
+        # Email is required by database, use a fallback if not provided
+        # Use user_id as email if email is None (some auth providers might not include email)
+        user_email = email or f"{user_id}@auth0.local"
+        user = User(id=user_id, email=user_email, name=name)
         db.add(user)
         db.commit()
         db.refresh(user)
-        logger.info(f"Created new user: {user_id}")
+        logger.info(f"Created new user: {user_id} with email: {user_email}")
     return user
 
 
@@ -43,302 +46,285 @@ class StorageAdapter:
         self.session_id = session_id or str(uuid.uuid4())  # Generate session ID if not provided
         self.is_authenticated = user is not None and db is not None
         self.use_database = db is not None
+        
+        # In-memory storage (fallback when DB not available)
+        if not self.use_database:
+            from .api import REVISION_DEFS, REVISION_RUNS, RUN_QUESTIONS, RUN_ANSWERS
+            self._revisions = REVISION_DEFS
+            self._runs = REVISION_RUNS
+            self._questions = RUN_QUESTIONS
+            self._answers = RUN_ANSWERS
+    
+    def _get_user_id(self) -> Optional[str]:
+        """Get user_id if authenticated, None otherwise."""
+        return self.user["user_id"] if self.is_authenticated else None
+    
+    def _get_session_id(self) -> Optional[str]:
+        """Get session_id if not authenticated, None otherwise."""
+        return self.session_id if not self.is_authenticated else None
+    
+    def _ensure_user_exists(self):
+        """Ensure user exists in database if authenticated."""
+        if self.is_authenticated and self.use_database:
+            get_or_create_user(
+                self.db,
+                self.user["user_id"],
+                self.user.get("email"),
+                self.user.get("name")
+            )
     
     def create_revision(self, revision_data: dict) -> dict:
-        """Create revision in database (always persist when DB available)."""
+        """Create revision - persists to database if available, otherwise in-memory."""
+        self._ensure_user_exists()
+        
+        user_id = self._get_user_id()
+        session_id = self._get_session_id()
+        
+        logger.info(f"Creating revision: is_authenticated={self.is_authenticated}, user_id={user_id}, session_id={session_id}")
+        
         if self.use_database:
-            return self._create_revision_db(revision_data)
+            revision = Revision(
+                id=revision_data["id"],
+                user_id=user_id,
+                session_id=session_id,
+                name=revision_data["name"],
+                subject=revision_data["subject"],
+                topics=revision_data["topics"],
+                description=revision_data.get("description"),
+                desired_question_count=revision_data["desiredQuestionCount"],
+                accuracy_threshold=revision_data["accuracyThreshold"],
+                extracted_texts=revision_data.get("extractedTexts", {}),
+                uploaded_files=revision_data.get("uploadedFiles"),
+            )
+            self.db.add(revision)
+            self.db.commit()
+            self.db.refresh(revision)
+            
+            result = {
+                "id": revision.id,
+                "name": revision.name,
+                "subject": revision.subject,
+                "topics": revision.topics,
+                "description": revision.description,
+                "desiredQuestionCount": revision.desired_question_count,
+                "accuracyThreshold": revision.accuracy_threshold,
+                "uploadedFiles": revision.uploaded_files,
+                "extractedTextPreview": revision_data.get("extractedTextPreview"),
+            }
         else:
-            return self._create_revision_memory(revision_data)
-    
-    def _create_revision_db(self, revision_data: dict) -> dict:
-        """Create revision in database."""
-        revision = Revision(
-            id=revision_data["id"],
-            user_id=self.user["user_id"] if self.is_authenticated else None,
-            session_id=self.session_id if not self.is_authenticated else None,
-            name=revision_data["name"],
-            subject=revision_data["subject"],
-            topics=revision_data["topics"],
-            description=revision_data.get("description"),
-            desired_question_count=revision_data["desiredQuestionCount"],
-            accuracy_threshold=revision_data["accuracyThreshold"],
-            extracted_texts=revision_data.get("extractedTexts", {}),
-            uploaded_files=revision_data.get("uploadedFiles"),
-        )
-        self.db.add(revision)
-        self.db.commit()
-        self.db.refresh(revision)
+            # In-memory storage
+            self._revisions[revision_data["id"]] = revision_data
+            result = revision_data
         
-        logger.info(f"Created revision {revision.id} for {'user' if self.is_authenticated else 'session'} {self.user['user_id'] if self.is_authenticated else self.session_id}")
-        
-        return {
-            "id": revision.id,
-            "name": revision.name,
-            "subject": revision.subject,
-            "topics": revision.topics,
-            "description": revision.description,
-            "desiredQuestionCount": revision.desired_question_count,
-            "accuracyThreshold": revision.accuracy_threshold,
-            "uploadedFiles": revision.uploaded_files,
-            "extractedTextPreview": revision_data.get("extractedTextPreview"),
-        }
-    
-    def _create_revision_memory(self, revision_data: dict) -> dict:
-        """Create revision in memory (fallback when DB not available)."""
-        from .api import REVISION_DEFS
-        revision_id = revision_data["id"]
-        REVISION_DEFS[revision_id] = revision_data
-        return revision_data
+        logger.info(f"Created revision {revision_data['id']} for {'user' if self.is_authenticated else 'session'} {user_id or session_id}")
+        return result
     
     def list_revisions(self) -> List[dict]:
         """List revisions - authenticated users see their revisions, anonymous see session revisions."""
         if self.use_database:
-            return self._list_revisions_db()
+            if self.is_authenticated:
+                revisions = self.db.query(Revision).filter(
+                    Revision.user_id == self.user["user_id"]
+                ).all()
+                logger.info(f"Listing revisions for authenticated user {self.user['user_id']}: found {len(revisions)} revisions")
+            else:
+                revisions = self.db.query(Revision).filter(
+                    Revision.session_id == self.session_id
+                ).all()
+                logger.info(f"Found {len(revisions)} revisions for session {self.session_id}")
+            
+            return [{
+                "id": r.id,
+                "name": r.name,
+                "subject": r.subject,
+                "topics": r.topics,
+                "description": r.description,
+                "desiredQuestionCount": r.desired_question_count,
+                "accuracyThreshold": r.accuracy_threshold,
+                "uploadedFiles": r.uploaded_files,
+                "extractedTextPreview": None,
+            } for r in revisions]
         else:
-            return self._list_revisions_memory()
-    
-    def _list_revisions_db(self) -> List[dict]:
-        """List revisions from database."""
-        if self.is_authenticated:
-            # Authenticated: get by user_id
-            revisions = self.db.query(Revision).filter(
-                Revision.user_id == self.user["user_id"]
-            ).all()
-        else:
-            # Anonymous: get by session_id (only current session)
-            revisions = self.db.query(Revision).filter(
-                Revision.session_id == self.session_id
-            ).all()
-        
-        return [{
-            "id": r.id,
-            "name": r.name,
-            "subject": r.subject,
-            "topics": r.topics,
-            "description": r.description,
-            "desiredQuestionCount": r.desired_question_count,
-            "accuracyThreshold": r.accuracy_threshold,
-            "uploadedFiles": r.uploaded_files,
-            "extractedTextPreview": None,
-        } for r in revisions]
-    
-    def _list_revisions_memory(self) -> List[dict]:
-        """List revisions from memory (fallback)."""
-        from .api import REVISION_DEFS
-        return list(REVISION_DEFS.values())
+            # In-memory: return all (no access control in memory mode)
+            #TODO: this should be limited to the session id
+            return list(self._revisions.values())
     
     def get_revision(self, revision_id: str) -> Optional[dict]:
         """Get revision - only if user owns it or it's in current session."""
         if self.use_database:
-            return self._get_revision_db(revision_id)
+            if self.is_authenticated:
+                revision = self.db.query(Revision).filter(
+                    Revision.id == revision_id,
+                    Revision.user_id == self.user["user_id"]
+                ).first()
+            else:
+                revision = self.db.query(Revision).filter(
+                    Revision.id == revision_id,
+                    Revision.session_id == self.session_id
+                ).first()
+            
+            if not revision:
+                return None
+            
+            return {
+                "id": revision.id,
+                "name": revision.name,
+                "subject": revision.subject,
+                "topics": revision.topics,
+                "description": revision.description,
+                "desiredQuestionCount": revision.desired_question_count,
+                "accuracyThreshold": revision.accuracy_threshold,
+                "extractedTexts": revision.extracted_texts or {},
+                "uploadedFiles": revision.uploaded_files,
+            }
         else:
-            return self._get_revision_memory(revision_id)
-    
-    def _get_revision_db(self, revision_id: str) -> Optional[dict]:
-        """Get revision from database with access control."""
-        if self.is_authenticated:
-            revision = self.db.query(Revision).filter(
-                Revision.id == revision_id,
-                Revision.user_id == self.user["user_id"]
-            ).first()
-        else:
-            # Anonymous: only if it belongs to current session
-            revision = self.db.query(Revision).filter(
-                Revision.id == revision_id,
-                Revision.session_id == self.session_id
-            ).first()
-        
-        if not revision:
-            return None
-        
-        return {
-            "id": revision.id,
-            "name": revision.name,
-            "subject": revision.subject,
-            "topics": revision.topics,
-            "description": revision.description,
-            "desiredQuestionCount": revision.desired_question_count,
-            "accuracyThreshold": revision.accuracy_threshold,
-            "extractedTexts": revision.extracted_texts or {},
-            "uploadedFiles": revision.uploaded_files,
-        }
-    
-    def _get_revision_memory(self, revision_id: str) -> Optional[dict]:
-        """Get revision from memory (fallback)."""
-        from .api import REVISION_DEFS
-        return REVISION_DEFS.get(revision_id)
+            # In-memory storage
+            return self._revisions.get(revision_id)
     
     def create_run(self, run_data: dict) -> dict:
-        """Create run in database."""
-        if self.use_database:
-            return self._create_run_db(run_data)
-        else:
-            return self._create_run_memory(run_data)
-    
-    def _create_run_db(self, run_data: dict) -> dict:
-        """Create run in database."""
-        run = RevisionRun(
-            id=run_data["id"],
-            user_id=self.user["user_id"] if self.is_authenticated else None,
-            session_id=self.session_id if not self.is_authenticated else None,
-            revision_id=run_data["revisionId"],
-            status=run_data.get("status", "running"),
-        )
-        self.db.add(run)
-        self.db.commit()
-        self.db.refresh(run)
-        
-        return {
-            "id": run.id,
-            "revisionId": run.revision_id,
-            "status": run.status,
-        }
-    
-    def _create_run_memory(self, run_data: dict) -> dict:
-        """Create run in memory (fallback)."""
-        from .api import REVISION_RUNS
-        REVISION_RUNS[run_data["id"]] = run_data
-        return run_data
+        """Create run - persists to database if available, otherwise in-memory."""
+        try:
+            self._ensure_user_exists()
+            
+            user_id = self._get_user_id()
+            session_id = self._get_session_id()
+            
+            logger.info(f"Creating run: is_authenticated={self.is_authenticated}, user_id={user_id}, session_id={session_id}, revision_id={run_data['revisionId']}")
+            
+            if self.use_database:
+                run = RevisionRun(
+                    id=run_data["id"],
+                    user_id=user_id,
+                    session_id=session_id,
+                    revision_id=run_data["revisionId"],
+                    status=run_data.get("status", "running"),
+                )
+                self.db.add(run)
+                self.db.commit()
+                self.db.refresh(run)
+                
+                result = {
+                    "id": run.id,
+                    "revisionId": run.revision_id,
+                    "status": run.status,
+                }
+                logger.info(f"Created run {run.id} successfully")
+            else:
+                # In-memory storage
+                self._runs[run_data["id"]] = run_data
+                result = run_data
+            
+            return result
+        except Exception as e:
+            logger.error(f"Failed to create run: {e}")
+            if self.use_database:
+                self.db.rollback()
+            raise
     
     def get_run(self, run_id: str) -> Optional[dict]:
         """Get run with access control."""
         if self.use_database:
-            return self._get_run_db(run_id)
+            if self.is_authenticated:
+                run = self.db.query(RevisionRun).filter(
+                    RevisionRun.id == run_id,
+                    RevisionRun.user_id == self.user["user_id"]
+                ).first()
+            else:
+                run = self.db.query(RevisionRun).filter(
+                    RevisionRun.id == run_id,
+                    RevisionRun.session_id == self.session_id
+                ).first()
+            
+            if not run:
+                return None
+            
+            return {
+                "id": run.id,
+                "revisionId": run.revision_id,
+                "status": run.status,
+            }
         else:
-            return self._get_run_memory(run_id)
-    
-    def _get_run_db(self, run_id: str) -> Optional[dict]:
-        """Get run from database with access control."""
-        if self.is_authenticated:
-            run = self.db.query(RevisionRun).filter(
-                RevisionRun.id == run_id,
-                RevisionRun.user_id == self.user["user_id"]
-            ).first()
-        else:
-            run = self.db.query(RevisionRun).filter(
-                RevisionRun.id == run_id,
-                RevisionRun.session_id == self.session_id
-            ).first()
-        
-        if not run:
-            return None
-        
-        return {
-            "id": run.id,
-            "revisionId": run.revision_id,
-            "status": run.status,
-        }
-    
-    def _get_run_memory(self, run_id: str) -> Optional[dict]:
-        """Get run from memory (fallback)."""
-        from .api import REVISION_RUNS
-        return REVISION_RUNS.get(run_id)
+            # In-memory storage
+            return self._runs.get(run_id)
     
     def store_questions(self, run_id: str, questions: List[dict]):
         """Store questions for a run."""
-        if self.use_database:
-            self._store_questions_db(run_id, questions)
-        else:
-            self._store_questions_memory(run_id, questions)
-    
-    def _store_questions_db(self, run_id: str, questions: List[dict]):
-        """Store questions in database."""
-        # Delete existing questions for this run
-        self.db.query(RunQuestion).filter(RunQuestion.run_id == run_id).delete()
-        
-        # Add new questions
-        for idx, q in enumerate(questions):
-            question = RunQuestion(
-                id=q["id"],
-                run_id=run_id,
-                question_text=q["text"],
-                question_index=idx,
-            )
-            self.db.add(question)
-        self.db.commit()
-    
-    def _store_questions_memory(self, run_id: str, questions: List[dict]):
-        """Store questions in memory (fallback)."""
-        from .api import RUN_QUESTIONS
-        RUN_QUESTIONS[run_id] = questions
+        try:
+            if self.use_database:
+                # Delete existing questions for this run
+                self.db.query(RunQuestion).filter(RunQuestion.run_id == run_id).delete()
+                
+                # Add new questions
+                for idx, q in enumerate(questions):
+                    question = RunQuestion(
+                        id=q["id"],
+                        run_id=run_id,
+                        question_text=q["text"],
+                        question_index=idx,
+                    )
+                    self.db.add(question)
+                self.db.commit()
+                logger.info(f"Stored {len(questions)} questions for run {run_id}")
+            else:
+                # In-memory storage
+                self._questions[run_id] = questions
+        except Exception as e:
+            logger.error(f"Failed to store questions for run {run_id}: {e}")
+            if self.use_database:
+                self.db.rollback()
+            raise
     
     def get_questions(self, run_id: str) -> List[dict]:
         """Get questions for a run."""
         if self.use_database:
-            return self._get_questions_db(run_id)
+            questions = self.db.query(RunQuestion).filter(
+                RunQuestion.run_id == run_id
+            ).order_by(RunQuestion.question_index).all()
+            
+            return [{"id": q.id, "text": q.question_text} for q in questions]
         else:
-            return self._get_questions_memory(run_id)
-    
-    def _get_questions_db(self, run_id: str) -> List[dict]:
-        """Get questions from database."""
-        questions = self.db.query(RunQuestion).filter(
-            RunQuestion.run_id == run_id
-        ).order_by(RunQuestion.question_index).all()
-        
-        return [{"id": q.id, "text": q.question_text} for q in questions]
-    
-    def _get_questions_memory(self, run_id: str) -> List[dict]:
-        """Get questions from memory (fallback)."""
-        from .api import RUN_QUESTIONS
-        return RUN_QUESTIONS.get(run_id, [])
+            # In-memory storage
+            return self._questions.get(run_id, [])
     
     def store_answer(self, run_id: str, answer_data: dict):
         """Store answer result."""
         if self.use_database:
-            self._store_answer_db(run_id, answer_data)
+            answer = RunAnswer(
+                id=str(uuid.uuid4()),
+                run_id=run_id,
+                question_id=answer_data["questionId"],
+                student_answer=answer_data["studentAnswer"],
+                is_correct=answer_data.get("isCorrect", False),
+                score=answer_data.get("score", "Incorrect"),
+                correct_answer=answer_data.get("correctAnswer", ""),
+                explanation=answer_data.get("explanation"),
+                error=answer_data.get("error"),
+            )
+            self.db.add(answer)
+            self.db.commit()
         else:
-            self._store_answer_memory(run_id, answer_data)
-    
-    def _store_answer_db(self, run_id: str, answer_data: dict):
-        """Store answer in database."""
-        answer = RunAnswer(
-            id=str(uuid.uuid4()),
-            run_id=run_id,
-            question_id=answer_data["questionId"],
-            student_answer=answer_data["studentAnswer"],
-            is_correct=answer_data.get("isCorrect", False),
-            score=answer_data.get("score", "Incorrect"),
-            correct_answer=answer_data.get("correctAnswer", ""),
-            explanation=answer_data.get("explanation"),
-            error=answer_data.get("error"),
-        )
-        self.db.add(answer)
-        self.db.commit()
-    
-    def _store_answer_memory(self, run_id: str, answer_data: dict):
-        """Store answer in memory (fallback)."""
-        from .api import RUN_ANSWERS
-        if run_id not in RUN_ANSWERS:
-            RUN_ANSWERS[run_id] = []
-        RUN_ANSWERS[run_id].append(answer_data)
+            # In-memory storage
+            if run_id not in self._answers:
+                self._answers[run_id] = []
+            self._answers[run_id].append(answer_data)
     
     def get_answers(self, run_id: str) -> List[dict]:
         """Get all answers for a run."""
         if self.use_database:
-            return self._get_answers_db(run_id)
+            answers = self.db.query(RunAnswer).filter(
+                RunAnswer.run_id == run_id
+            ).order_by(RunAnswer.created_at).all()
+            
+            return [{
+                "questionId": a.question_id,
+                "questionText": a.question.question_text if a.question else None,
+                "studentAnswer": a.student_answer,
+                "isCorrect": a.is_correct,
+                "score": a.score,
+                "correctAnswer": a.correct_answer,
+                "explanation": a.explanation,
+                "error": a.error,
+            } for a in answers]
         else:
-            return self._get_answers_memory(run_id)
-    
-    def _get_answers_db(self, run_id: str) -> List[dict]:
-        """Get answers from database."""
-        answers = self.db.query(RunAnswer).filter(
-            RunAnswer.run_id == run_id
-        ).order_by(RunAnswer.created_at).all()
-        
-        return [{
-            "questionId": a.question_id,
-            "questionText": a.question.question_text if a.question else None,
-            "studentAnswer": a.student_answer,
-            "isCorrect": a.is_correct,
-            "score": a.score,
-            "correctAnswer": a.correct_answer,
-            "explanation": a.explanation,
-            "error": a.error,
-        } for a in answers]
-    
-    def _get_answers_memory(self, run_id: str) -> List[dict]:
-        """Get answers from memory (fallback)."""
-        from .api import RUN_ANSWERS
-        return RUN_ANSWERS.get(run_id, [])
-
+            # In-memory storage
+            return self._answers.get(run_id, [])
