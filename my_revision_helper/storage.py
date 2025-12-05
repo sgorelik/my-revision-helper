@@ -112,9 +112,14 @@ class StorageAdapter:
                 "extractedTextPreview": revision_data.get("extractedTextPreview"),
             }
         else:
-            # In-memory storage
-            self._revisions[revision_data["id"]] = revision_data
-            result = revision_data
+            # In-memory storage - add session_id/user_id for filtering
+            revision_data_with_meta = revision_data.copy()
+            if user_id:
+                revision_data_with_meta["userId"] = user_id
+            if session_id:
+                revision_data_with_meta["sessionId"] = session_id
+            self._revisions[revision_data["id"]] = revision_data_with_meta
+            result = revision_data_with_meta
         
         logger.info(f"Created revision {revision_data['id']} for {'user' if self.is_authenticated else 'session'} {user_id or session_id}")
         return result
@@ -145,9 +150,21 @@ class StorageAdapter:
                 "extractedTextPreview": None,
             } for r in revisions]
         else:
-            # In-memory: return all (no access control in memory mode)
-            #TODO: this should be limited to the session id
-            return list(self._revisions.values())
+            # In-memory: filter by user_id or session_id
+            if self.is_authenticated:
+                # For authenticated users, only return revisions with matching user_id
+                user_id = self._get_user_id()
+                return [
+                    r for r in self._revisions.values()
+                    if r.get("userId") == user_id
+                ]
+            else:
+                # For anonymous users, only return revisions with matching session_id
+                session_id = self._get_session_id()
+                return [
+                    r for r in self._revisions.values()
+                    if r.get("sessionId") == session_id
+                ]
     
     def get_revision(self, revision_id: str) -> Optional[dict]:
         """Get revision - only if user owns it or it's in current session."""
@@ -178,8 +195,22 @@ class StorageAdapter:
                 "uploadedFiles": revision.uploaded_files,
             }
         else:
-            # In-memory storage
-            return self._revisions.get(revision_id)
+            # In-memory storage - check access control
+            revision = self._revisions.get(revision_id)
+            if not revision:
+                return None
+            
+            # Verify user/session has access
+            if self.is_authenticated:
+                user_id = self._get_user_id()
+                if revision.get("userId") != user_id:
+                    return None
+            else:
+                session_id = self._get_session_id()
+                if revision.get("sessionId") != session_id:
+                    return None
+            
+            return revision
     
     def create_run(self, run_data: dict) -> dict:
         """Create run - persists to database if available, otherwise in-memory."""
@@ -210,9 +241,14 @@ class StorageAdapter:
                 }
                 logger.info(f"Created run {run.id} successfully")
             else:
-                # In-memory storage
-                self._runs[run_data["id"]] = run_data
-                result = run_data
+                # In-memory storage - add session_id/user_id for filtering
+                run_data_with_meta = run_data.copy()
+                if user_id:
+                    run_data_with_meta["userId"] = user_id
+                if session_id:
+                    run_data_with_meta["sessionId"] = session_id
+                self._runs[run_data["id"]] = run_data_with_meta
+                result = run_data_with_meta
             
             return result
         except Exception as e:
@@ -244,8 +280,22 @@ class StorageAdapter:
                 "status": run.status,
             }
         else:
-            # In-memory storage
-            return self._runs.get(run_id)
+            # In-memory storage - check access control
+            run = self._runs.get(run_id)
+            if not run:
+                return None
+            
+            # Verify user/session has access
+            if self.is_authenticated:
+                user_id = self._get_user_id()
+                if run.get("userId") != user_id:
+                    return None
+            else:
+                session_id = self._get_session_id()
+                if run.get("sessionId") != session_id:
+                    return None
+            
+            return run
     
     def store_questions(self, run_id: str, questions: List[dict]):
         """Store questions for a run."""
@@ -377,9 +427,20 @@ class StorageAdapter:
             
             return completed_runs
         else:
-            # In-memory storage - check which runs have answers
+            # In-memory storage - filter by user_id or session_id, then check which runs have answers
+            user_id = self._get_user_id()
+            session_id = self._get_session_id()
+            
             completed_runs = []
             for run_id, run_data in self._runs.items():
+                # Filter by user_id or session_id
+                if self.is_authenticated:
+                    if run_data.get("userId") != user_id:
+                        continue
+                else:
+                    if run_data.get("sessionId") != session_id:
+                        continue
+                
                 answers = self._answers.get(run_id, [])
                 if answers:
                     revision_id = run_data.get("revisionId")

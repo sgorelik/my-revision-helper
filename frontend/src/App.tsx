@@ -249,10 +249,10 @@ function App() {
   const [knownRevisions, setKnownRevisions] = useState<RevisionConfig[]>([])
   const [completedRuns, setCompletedRuns] = useState<CompletedRun[]>([])
   const [showRevisionList, setShowRevisionList] = useState(false)
+  const [currentPage, setCurrentPage] = useState<'home' | 'create'>('home')
   const [form, setForm] = useState({
     name: '',
     subject: '',
-    topicsInput: '',
     description: '',
     desiredQuestionCount: 10,
     accuracyThreshold: 80,
@@ -344,15 +344,11 @@ function App() {
     setIsProcessingFiles(selectedFiles.length > 0)
     try {
       const token = await getToken()
-      const topics = form.topicsInput
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean)
       const created = await createRevision(
         {
           name: form.name,
           subject: form.subject,
-          topics,
+          topics: [], // Topics removed - not currently used
           description: form.description,
           desiredQuestionCount: form.desiredQuestionCount,
           accuracyThreshold: form.accuracyThreshold,
@@ -380,6 +376,8 @@ function App() {
         setSummary(null)
         await loadRevisions()
         await loadCompletedRuns()
+        // Navigate away from create page (will show run page automatically)
+        setCurrentPage('home')
       }
       // Clear selected files after successful creation
       setSelectedFiles([])
@@ -493,6 +491,7 @@ function App() {
     setCurrentQuestionNumber(0)
     setTotalQuestions(0)
     setShowRevisionList(true)
+    setCurrentPage('home')
   }
 
   const handleLoadSummary = async () => {
@@ -613,9 +612,37 @@ function App() {
           <p className="text-blue-400">AI-powered study companion for effective learning</p>
         </div>
 
-      {/* Revision Lists View */}
-      {showRevisionList && !revision && !summary && (
+      {/* Revision Lists View (Homepage) */}
+      {currentPage === 'home' && showRevisionList && !revision && !summary && (
         <div className="space-y-6">
+          {/* Create New Revision Card */}
+          <Card className="rounded-xl border-2 border-orange-100 shadow-lg cursor-pointer hover:shadow-xl transition-all hover:border-orange-400" onClick={() => setCurrentPage('create')}>
+            <CardHeader className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-t-xl">
+              <div className="flex items-center gap-3">
+                <DocumentTextIcon className="w-6 h-6 text-orange-600" />
+                <h2 className="text-2xl font-semibold text-orange-900">Create New Revision</h2>
+              </div>
+            </CardHeader>
+            <CardBody className="p-6">
+              <div className="flex items-center justify-between">
+                <p className="text-gray-700">
+                  Set up a new revision session with questions tailored to your study materials
+                </p>
+                <Button
+                  color="primary"
+                  size="md"
+                  className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 shadow-md"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setCurrentPage('create')
+                  }}
+                >
+                  Create
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
+
           {/* Configured Revisions */}
           {knownRevisions.length > 0 && (
             <Card className="rounded-xl border-2 border-orange-100 shadow-lg">
@@ -720,15 +747,26 @@ function App() {
             <Card className="rounded-xl border-2 border-gray-200 shadow-lg bg-white">
               <CardBody className="text-center py-8">
                 <DocumentTextIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                <p className="text-gray-600">No revisions yet. Create one below to get started!</p>
+                <p className="text-gray-600">No revisions yet. Click the button above to create one!</p>
               </CardBody>
             </Card>
           )}
         </div>
       )}
 
-      {!revision && (
+      {/* Revision Creation Page */}
+      {currentPage === 'create' && !revision && !summary && (
         <div className="mb-6">
+          <div className="mb-4">
+            <Button
+              onClick={() => setCurrentPage('home')}
+              color="secondary"
+              variant="flat"
+              className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700"
+            >
+              ← Back to Home
+            </Button>
+          </div>
           <Card className="rounded-xl border-2 border-orange-100 shadow-lg bg-white mb-4">
             <CardBody className="p-6">
               <div className="flex items-start gap-3">
@@ -776,14 +814,6 @@ function App() {
                   </SelectItem>
                 ))}
               </Select>
-              <Input
-                label="Topic Areas"
-                placeholder="Fractions, Algebra, Geometry (comma-separated)"
-                value={form.topicsInput}
-                onChange={(e) => onChangeForm('topicsInput', e.target.value)}
-                variant="bordered"
-                classNames={inputClassNames}
-              />
               <Textarea
                 label="Description"
                 placeholder="Describe what to study, or upload images with text below"
