@@ -212,6 +212,56 @@ class StorageAdapter:
             
             return revision
     
+    def delete_revision(self, revision_id: str) -> bool:
+        """Delete revision - only if user owns it or it's in current session."""
+        try:
+            if self.use_database:
+                if self.is_authenticated:
+                    revision = self.db.query(Revision).filter(
+                        Revision.id == revision_id,
+                        Revision.user_id == self.user["user_id"]
+                    ).first()
+                else:
+                    # Non-authenticated users cannot delete revisions
+                    logger.warning(f"Non-authenticated user attempted to delete revision {revision_id}")
+                    return False
+                
+                if not revision:
+                    logger.warning(f"Revision {revision_id} not found or user doesn't have access")
+                    return False
+                
+                # Delete the revision (cascade will handle related runs, questions, answers)
+                self.db.delete(revision)
+                self.db.commit()
+                logger.info(f"Deleted revision {revision_id} for user {self.user['user_id']}")
+                return True
+            else:
+                # In-memory storage - check access control
+                revision = self._revisions.get(revision_id)
+                if not revision:
+                    return False
+                
+                # Only authenticated users can delete
+                if not self.is_authenticated:
+                    logger.warning(f"Non-authenticated user attempted to delete revision {revision_id}")
+                    return False
+                
+                # Verify user owns this revision
+                user_id = self._get_user_id()
+                if revision.get("userId") != user_id:
+                    logger.warning(f"User {user_id} attempted to delete revision {revision_id} owned by {revision.get('userId')}")
+                    return False
+                
+                # Delete from in-memory storage
+                del self._revisions[revision_id]
+                logger.info(f"Deleted revision {revision_id} from in-memory storage")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to delete revision {revision_id}: {e}")
+            if self.use_database:
+                self.db.rollback()
+            return False
+    
     def create_run(self, run_data: dict) -> dict:
         """Create run - persists to database if available, otherwise in-memory."""
         try:

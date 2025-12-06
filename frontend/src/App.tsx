@@ -231,6 +231,28 @@ async function listCompletedRuns(token?: string | null): Promise<CompletedRun[]>
   return res.json()
 }
 
+async function deleteRevision(revisionId: string, token?: string | null): Promise<void> {
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${API_BASE}/revisions/${revisionId}`, {
+    method: 'DELETE',
+    headers,
+  })
+  if (!res.ok) {
+    const errorText = await res.text()
+    let errorMessage = 'Failed to delete revision'
+    try {
+      const errorJson = JSON.parse(errorText)
+      errorMessage = errorJson.detail || errorMessage
+    } catch {
+      errorMessage = errorText || errorMessage
+    }
+    throw new Error(errorMessage)
+  }
+}
+
 function App() {
   // Auth hook - works with or without Auth0 configured
   const { user, isAuthenticated, isLoading: authLoading, login, logout, getToken } = useAuth()
@@ -302,12 +324,37 @@ function App() {
   }
 
   const loadCompletedRuns = async () => {
+    // Only load completed runs for authenticated users
+    if (!isAuthenticated) {
+      setCompletedRuns([])
+      return
+    }
     try {
       const token = await getToken()
       const runs = await listCompletedRuns(token)
       setCompletedRuns(runs)
     } catch (err: any) {
       setError(err.message ?? 'Failed to load completed runs')
+    }
+  }
+
+  const handleDeleteRevision = async (revisionId: string) => {
+    if (!isAuthenticated) {
+      setError('You must be logged in to delete revisions')
+      return
+    }
+    if (!confirm('Are you sure you want to delete this revision? This action cannot be undone.')) {
+      return
+    }
+    try {
+      setError(null)
+      const token = await getToken()
+      await deleteRevision(revisionId, token)
+      // Reload revisions after deletion
+      await loadRevisions()
+      await loadCompletedRuns()
+    } catch (err: any) {
+      setError(err.message ?? 'Failed to delete revision')
     }
   }
 
@@ -430,6 +477,10 @@ function App() {
 
   const handleFinishEarly = async () => {
     if (!run) return
+    if (!isAuthenticated) {
+      setError('You must be logged in to finish and view summaries')
+      return
+    }
     try {
       const token = await getToken()
       const s = await getRunSummary(run.id, token)
@@ -467,6 +518,10 @@ function App() {
   }
 
   const handleViewSummary = async (runId: string) => {
+    if (!isAuthenticated) {
+      setError('You must be logged in to view revision summaries')
+      return
+    }
     try {
       setError(null)
       const token = await getToken()
@@ -496,6 +551,10 @@ function App() {
 
   const handleLoadSummary = async () => {
     if (!run) return
+    if (!isAuthenticated) {
+      // Non-authenticated users shouldn't see summaries
+      return
+    }
     try {
       const token = await getToken()
       const s = await getRunSummary(run.id, token)
@@ -505,16 +564,16 @@ function App() {
     }
   }
 
-  // Auto-load summary when no more questions
+  // Auto-load summary when no more questions (only for authenticated users)
   useEffect(() => {
-    if (run && !question && !summary && totalQuestions > 0) {
+    if (run && !question && !summary && totalQuestions > 0 && isAuthenticated) {
       // Small delay to show animation
       const timer = setTimeout(() => {
         handleLoadSummary()
       }, 1500)
       return () => clearTimeout(timer)
     }
-  }, [run, question, summary, totalQuestions])
+  }, [run, question, summary, totalQuestions, isAuthenticated])
 
   // Load revisions and completed runs on mount and when auth state changes
   useEffect(() => {
@@ -675,15 +734,28 @@ function App() {
                               </p>
                             )}
                           </div>
-                          <Button
-                            onClick={() => r.id && handleLaunchRevision(r.id)}
-                            color="primary"
-                            size="md"
-                            className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
-                            isDisabled={!r.id}
-                          >
-                            Start
-                          </Button>
+                          <div className="flex items-center gap-2 ml-4">
+                            <Button
+                              onClick={() => r.id && handleLaunchRevision(r.id)}
+                              color="primary"
+                              size="md"
+                              className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                              isDisabled={!r.id}
+                            >
+                              Start
+                            </Button>
+                            {isAuthenticated && r.id && (
+                              <Button
+                                onClick={() => r.id && handleDeleteRevision(r.id)}
+                                color="danger"
+                                size="md"
+                                variant="flat"
+                                className="bg-gradient-to-r from-red-50 to-rose-50 hover:from-red-100 hover:to-rose-100 border-2 border-red-300 text-red-700 rounded-lg font-semibold shadow-md transition-all"
+                              >
+                                Delete
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </CardBody>
                     </Card>
@@ -693,8 +765,8 @@ function App() {
             </Card>
           )}
 
-          {/* Completed Revisions */}
-          {completedRuns.length > 0 && (
+          {/* Completed Revisions - Only show for authenticated users */}
+          {isAuthenticated && completedRuns.length > 0 && (
             <Card className="rounded-xl border-2 border-green-100 shadow-lg">
               <CardHeader className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-t-xl">
                 <div className="flex items-center gap-3">
@@ -1188,7 +1260,7 @@ function App() {
               </>
             )}
 
-            {summary && (
+            {summary && isAuthenticated && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between mb-4">
                   <Button

@@ -598,6 +598,35 @@ async def list_revisions(
     return [RevisionCreateResponse(**r) for r in revisions]
 
 
+@app.delete("/api/revisions/{revision_id}")
+async def delete_revision(
+    revision_id: str,
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+):
+    """
+    Delete a revision configuration.
+    
+    - Only authenticated users can delete revisions
+    - Users can only delete revisions they created
+    - Non-authenticated users cannot delete revisions
+    """
+    from fastapi import HTTPException
+    
+    # Only authenticated users can delete
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required to delete revisions")
+    
+    storage = StorageAdapter(user, db, session_id)
+    success = storage.delete_revision(revision_id)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Revision {revision_id} not found or you don't have permission to delete it")
+    
+    return {"message": f"Revision {revision_id} deleted successfully"}
+
+
 @app.post("/api/revisions/{revision_id}/runs", response_model=RevisionRun)
 async def start_run(
     revision_id: str,
@@ -774,7 +803,14 @@ async def list_completed_runs(
 ) -> List[CompletedRun]:
     """
     List all completed runs with summary data (revision name, score, etc.).
+    
+    - Only authenticated users can see completed runs
+    - Non-authenticated users will receive an empty list
     """
+    # Only authenticated users can see completed runs
+    if not user:
+        return []
+    
     storage = StorageAdapter(user, db, session_id)
     completed_runs = storage.list_completed_runs()
     return [CompletedRun(**run) for run in completed_runs]
@@ -1070,13 +1106,21 @@ async def get_summary(
 ):
     """
     Summarise all answered questions for this run.
+    
+    - Only authenticated users can view summaries
+    - Non-authenticated users cannot access run summaries
     """
+    from fastapi import HTTPException
+    
+    # Only authenticated users can view summaries
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required to view run summaries")
+    
     storage = StorageAdapter(user, db, session_id)
     
     # Verify run access
     run = storage.get_run(run_id)
     if not run:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
     
     revision_id = run["revisionId"]
