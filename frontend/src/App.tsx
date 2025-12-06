@@ -563,7 +563,7 @@ function App() {
                   <strong>Session-only mode:</strong> Your revisions and progress will not be saved after you close this page.{' '}
                   <button 
                     onClick={login}
-                    className="font-medium underline hover:text-yellow-900"
+                    className="font-medium underline hover:text-yellow-900 rounded-lg px-2 py-1 transition-all"
                   >
                     Sign in to save your work
                   </button>
@@ -572,7 +572,7 @@ function App() {
             </div>
             <button
               onClick={login}
-              className="ml-4 bg-gradient-to-r from-yellow-400 to-orange-400 hover:from-yellow-500 hover:to-orange-500 text-yellow-900 px-4 py-2 rounded-lg font-semibold shadow-md transition-all"
+              className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white px-4 py-2 rounded-lg font-semibold shadow-md transition-all"
             >
               Sign In
             </button>
@@ -593,7 +593,7 @@ function App() {
             </div>
             <button
               onClick={logout}
-              className="text-sm text-green-700 hover:text-green-900 underline"
+              className="text-sm text-green-700 hover:text-green-900 underline rounded-lg px-2 py-1 transition-all"
             >
               Sign Out
             </button>
@@ -631,7 +631,7 @@ function App() {
                 <Button
                   color="primary"
                   size="md"
-                  className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 shadow-md"
+                  className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
                   onClick={(e) => {
                     e.stopPropagation()
                     setCurrentPage('create')
@@ -679,7 +679,7 @@ function App() {
                             onClick={() => r.id && handleLaunchRevision(r.id)}
                             color="primary"
                             size="md"
-                            className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 shadow-md"
+                            className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
                             isDisabled={!r.id}
                           >
                             Start
@@ -729,7 +729,7 @@ function App() {
                             onClick={() => handleViewSummary(completed.runId)}
                             color="success"
                             size="md"
-                            className="ml-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 shadow-md"
+                            className="ml-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white rounded-lg font-semibold shadow-md transition-all"
                           >
                             View Summary
                           </Button>
@@ -762,7 +762,7 @@ function App() {
               onClick={() => setCurrentPage('home')}
               color="secondary"
               variant="flat"
-              className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700"
+              className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700 rounded-lg font-semibold shadow-md transition-all"
             >
               ← Back to Home
             </Button>
@@ -871,7 +871,7 @@ function App() {
                       <button
                         type="button"
                         onClick={() => setSelectedFiles([])}
-                        className="text-xs text-green-700 hover:text-green-900 underline"
+                        className="text-xs text-green-700 hover:text-green-900 underline rounded-lg px-2 py-1 transition-all"
                       >
                         Clear all
                       </button>
@@ -915,7 +915,7 @@ function App() {
                               onClick={() => {
                                 setSelectedFiles((prev) => prev.filter((_, i) => i !== index))
                               }}
-                              className="ml-2 p-1 hover:bg-red-50 rounded text-red-600 hover:text-red-800 flex-shrink-0"
+                              className="ml-2 p-1 hover:bg-red-50 rounded-lg text-red-600 hover:text-red-800 flex-shrink-0 transition-all"
                               title="Remove file"
                             >
                               <XMarkIcon className="w-4 h-4" />
@@ -968,7 +968,7 @@ function App() {
               <button
                 type="submit"
                 disabled={isCreating || isProcessingFiles}
-                className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-700 hover:to-red-700 shadow-lg text-white py-3 px-4 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 shadow-lg text-white py-3 px-4 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
               >
                 {isProcessingFiles
                   ? 'Processing images and creating...'
@@ -1060,7 +1060,7 @@ function App() {
                       onClick={handleSubmitAnswer}
                       color="primary"
                       size="lg"
-                      className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 shadow-lg"
+                      className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white shadow-lg transition-all"
                       isLoading={isSubmittingAnswer}
                       disabled={isSubmittingAnswer || !answer.trim()}
                     >
@@ -1132,7 +1132,7 @@ function App() {
                               onClick={handleFinishEarly}
                               color="secondary"
                               variant="flat"
-                              className="flex-1 rounded-lg font-semibold bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700"
+                              className="flex-1 rounded-lg font-semibold bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700 shadow-md transition-all"
                             >
                               Finish Now
                             </Button>
@@ -1140,7 +1140,7 @@ function App() {
                               onClick={handleNextQuestion}
                               color="primary"
                               variant="flat"
-                              className="flex-1 rounded-lg font-semibold bg-gradient-to-r from-orange-50 to-yellow-50 hover:from-orange-100 hover:to-yellow-100 border-2 border-orange-200 text-orange-700"
+                              className="flex-1 rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white border-2 border-orange-500 shadow-md transition-all"
                               isLoading={isLoadingQuestion}
                             >
                               Next Question
@@ -1195,7 +1195,7 @@ function App() {
                     onClick={handleBackToHome}
                     color="secondary"
                     variant="flat"
-                    className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700"
+                    className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700 rounded-lg font-semibold shadow-md transition-all"
                   >
                     ← Back to Revisions
                   </Button>
