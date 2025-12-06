@@ -149,6 +149,7 @@ class CompletedRun(BaseModel):
     completedAt: str
     score: float
     totalQuestions: int
+    threshold: int
 
 
 # ---------- FastAPI app setup ----------

@@ -17,13 +17,13 @@ import {
   SelectItem,
 } from '@heroui/react'
 import {
-  DocumentTextIcon,
   PhotoIcon,
   CheckCircleIcon,
   XCircleIcon,
   XMarkIcon,
   DocumentIcon,
   PresentationChartBarIcon,
+  HomeIcon,
 } from '@heroicons/react/24/outline'
 import Logo from './Logo'
 import { useAuth } from './auth'
@@ -70,6 +70,7 @@ type CompletedRun = {
   completedAt: string
   score: number
   totalQuestions: number
+  threshold: number
 }
 
 type RevisionRun = {
@@ -312,6 +313,7 @@ function App() {
   const [totalQuestions, setTotalQuestions] = useState<number>(0)
   const [currentQuestionNumber, setCurrentQuestionNumber] = useState<number>(0)
   const [isLoadingQuestion, setIsLoadingQuestion] = useState(false)
+  const [userImageError, setUserImageError] = useState(false)
 
   const loadRevisions = async () => {
     try {
@@ -593,6 +595,13 @@ function App() {
     }
   }, [authLoading, isAuthenticated])
 
+  // Reset image error when user changes
+  useEffect(() => {
+    if (user) {
+      setUserImageError(false)
+    }
+  }, [user?.sub, user?.picture])
+
   // Show loading state while Auth0 initializes (only if Auth0 is configured)
   if (authLoading && import.meta.env.VITE_AUTH0_DOMAIN) {
     return (
@@ -607,69 +616,113 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-yellow-50 to-orange-50">
-      {/* Authentication Banner */}
-      {!isAuthenticated && import.meta.env.VITE_AUTH0_DOMAIN && (
-        <div className="bg-gradient-to-r from-yellow-50 via-amber-50 to-orange-50 border-l-4 border-yellow-400 p-4 mb-4 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="ml-3">
-                <p className="text-sm text-yellow-700">
-                  <strong>Session-only mode:</strong> Your revisions and progress will not be saved after you close this page.{' '}
-                  <button 
-                    onClick={login}
-                    className="font-medium underline hover:text-yellow-900 rounded-lg px-2 py-1 transition-all"
+      <div className="max-w-6xl ml-8 mr-auto px-4 pt-6 pb-4">
+        {/* Authentication Banner with Logo and HOME Button */}
+        {!isAuthenticated && import.meta.env.VITE_AUTH0_DOMAIN && (
+          <Card className="rounded-xl border-2 border-yellow-300 shadow-lg bg-gradient-to-r from-yellow-50 via-amber-50 to-orange-50 mb-6">
+            <CardBody className="p-4">
+              <div className="flex items-center justify-end mb-3">
+                {/* HOME Button - Show when not on home dashboard */}
+                {!(currentPage === 'home' && !revision && !summary) && (
+                  <Button
+                    onClick={handleBackToHome}
+                    color="primary"
+                    size="md"
+                    className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all flex items-center gap-2"
                   >
-                    Sign in to save your work
-                  </button>
-                </p>
+                    <HomeIcon className="w-5 h-5" />
+                    Home
+                  </Button>
+                )}
               </div>
-            </div>
-            <button
-              onClick={login}
-              className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white px-4 py-2 rounded-lg font-semibold shadow-md transition-all"
-            >
-              Sign In
-            </button>
-          </div>
-        </div>
-      )}
-      
-      {isAuthenticated && user && (
-        <div className="bg-gradient-to-r from-green-50 via-emerald-50 to-cyan-50 border-l-4 border-green-400 p-3 mb-4 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {user.picture && (
-                <img src={user.picture} alt={user.name || user.email} className="w-8 h-8 rounded-full" />
-              )}
-              <span className="text-sm text-green-800">
-                Signed in as <strong>{user.name || user.email}</strong> - Your work is being saved
-              </span>
-            </div>
-            <button
-              onClick={logout}
-              className="text-sm text-green-700 hover:text-green-900 underline rounded-lg px-2 py-1 transition-all"
-            >
-              Sign Out
-            </button>
-          </div>
-        </div>
-      )}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex-shrink-0">
+                    <svg className="h-6 w-6 text-yellow-600" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-base text-yellow-800 font-medium">
+                      <strong>Session-only mode:</strong> Your revisions and progress will not be saved after you close this page.{' '}
+                      <button 
+                        onClick={login}
+                        className="font-semibold underline hover:text-yellow-900 rounded-lg px-2 py-1 transition-all"
+                      >
+                        Sign in to save your work
+                      </button>
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  onClick={login}
+                  color="primary"
+                  size="md"
+                  className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                >
+                  Sign In
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
+        )}
+        
+        {isAuthenticated && user && (
+          <Card className="rounded-xl border-2 border-green-300 shadow-lg bg-gradient-to-r from-green-50 via-emerald-50 to-cyan-50 mb-6">
+            <CardBody className="p-4">
+              <div className="flex items-center justify-end mb-3">
+                {/* HOME Button - Show when not on home dashboard */}
+                {!(currentPage === 'home' && !revision && !summary) && (
+                  <Button
+                    onClick={handleBackToHome}
+                    color="primary"
+                    size="md"
+                    className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all flex items-center gap-2"
+                  >
+                    <HomeIcon className="w-5 h-5" />
+                    Home
+                  </Button>
+                )}
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {user.picture && !userImageError ? (
+                    <img 
+                      src={user.picture} 
+                      alt={user.name || user.email || 'User'} 
+                      className="w-10 h-10 rounded-full border-2 border-green-400 shadow-md"
+                      onError={() => setUserImageError(true)}
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full border-2 border-green-400 shadow-md bg-gradient-to-r from-green-400 to-emerald-400 flex items-center justify-center">
+                      <span className="text-white font-bold text-lg">
+                        {(user.name || user.email || 'U').charAt(0).toUpperCase()}
+                      </span>
+                    </div>
+                  )}
+                  <div>
+                    <p className="text-base text-green-800 font-medium">
+                      Signed in as <strong>{user.name || user.email}</strong> - Your work is being saved
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  onClick={logout}
+                  color="secondary"
+                  variant="flat"
+                  size="md"
+                  className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700 rounded-lg font-semibold shadow-md transition-all"
+                >
+                  Sign Out
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
+        )}
+
+      </div>
 
       <div className="max-w-6xl ml-8 mr-auto px-4 py-8">
-        <div className="text-center mb-8">
-          <div className="flex items-center justify-center gap-3 mb-2">
-            <Logo size="lg" />
-            <h1 className="text-4xl font-bold text-blue-600">
-              My Revision Pal
-            </h1>
-          </div>
-          <p className="text-blue-400">AI-powered study companion for effective learning</p>
-        </div>
 
       {/* Revision Lists View (Homepage) */}
       {currentPage === 'home' && showRevisionList && !revision && !summary && (
@@ -678,7 +731,7 @@ function App() {
           <Card className="rounded-xl border-2 border-orange-100 shadow-lg cursor-pointer hover:shadow-xl transition-all hover:border-orange-400" onClick={() => setCurrentPage('create')}>
             <CardHeader className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-t-xl">
               <div className="flex items-center gap-3">
-                <DocumentTextIcon className="w-6 h-6 text-orange-600" />
+                <Logo size="md" />
                 <h2 className="text-2xl font-semibold text-orange-900">Create New Revision</h2>
               </div>
             </CardHeader>
@@ -707,7 +760,7 @@ function App() {
             <Card className="rounded-xl border-2 border-orange-100 shadow-lg">
               <CardHeader className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-t-xl">
                 <div className="flex items-center gap-3">
-                  <DocumentTextIcon className="w-6 h-6 text-orange-600" />
+                  <Logo size="md" />
                   <h2 className="text-2xl font-semibold text-orange-900">Configured Revisions</h2>
                 </div>
               </CardHeader>
@@ -776,39 +829,80 @@ function App() {
               </CardHeader>
               <CardBody>
                 <div className="space-y-3">
-                  {completedRuns.map((completed) => (
-                    <Card key={completed.runId} className="border-2 border-green-200 hover:shadow-lg transition-all hover:border-green-400 rounded-lg bg-gradient-to-r from-green-50 to-cyan-50">
-                      <CardBody>
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <h3 className="font-semibold text-lg text-gray-900">{completed.revisionName}</h3>
-                            <Chip size="sm" variant="flat" color="success" className="mt-1 rounded-full">
-                              {completed.subject}
-                            </Chip>
-                            <div className="mt-2 flex items-center gap-4 text-sm">
-                              <span className="text-gray-700">
-                                <strong>Score:</strong> {completed.score.toFixed(1)}%
-                              </span>
-                              <span className="text-gray-600">
-                                <strong>Questions:</strong> {completed.totalQuestions}
-                              </span>
-                              <span className="text-gray-500 text-xs">
-                                {new Date(completed.completedAt).toLocaleDateString()}
-                              </span>
+                  {completedRuns.map((completed) => {
+                    // Color coding based on score relative to threshold
+                    // Green: score > threshold
+                    // Red: score <= threshold - 20
+                    // Orange: threshold - 20 < score <= threshold
+                    const getColorClasses = () => {
+                      if (completed.score > completed.threshold) {
+                        // Green - above threshold
+                        return {
+                          border: "border-green-400",
+                          hoverBorder: "hover:border-green-500",
+                          gradient: "bg-gradient-to-r from-green-50 to-emerald-50",
+                          buttonGradient: "bg-gradient-to-r from-green-600 to-emerald-600",
+                          buttonHover: "hover:from-green-700 hover:to-emerald-700",
+                        }
+                      } else if (completed.score <= completed.threshold - 20) {
+                        // Red - threshold - 20 or less
+                        return {
+                          border: "border-red-400",
+                          hoverBorder: "hover:border-red-500",
+                          gradient: "bg-gradient-to-r from-red-50 to-rose-50",
+                          buttonGradient: "bg-gradient-to-r from-red-600 to-rose-600",
+                          buttonHover: "hover:from-red-700 hover:to-rose-700",
+                        }
+                      } else {
+                        // Orange - between threshold - 20 and threshold
+                        return {
+                          border: "border-orange-400",
+                          hoverBorder: "hover:border-orange-500",
+                          gradient: "bg-gradient-to-r from-orange-50 to-amber-50",
+                          buttonGradient: "bg-gradient-to-r from-orange-600 to-amber-600",
+                          buttonHover: "hover:from-orange-700 hover:to-amber-700",
+                        }
+                      }
+                    }
+                    const colors = getColorClasses()
+                    
+                    return (
+                      <Card key={completed.runId} className={`border-2 ${colors.border} ${colors.hoverBorder} hover:shadow-lg transition-all rounded-lg ${colors.gradient}`}>
+                        <CardBody>
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <h3 className="font-semibold text-lg text-gray-900">{completed.revisionName}</h3>
+                              <Chip size="sm" variant="flat" color="secondary" className="mt-1 rounded-full">
+                                {completed.subject}
+                              </Chip>
+                              <div className="mt-2 flex items-center gap-4 text-sm">
+                                <span className="text-gray-700">
+                                  <strong>Score:</strong> {completed.score.toFixed(1)}%
+                                </span>
+                                <span className="text-gray-600">
+                                  <strong>Threshold:</strong> {completed.threshold}%
+                                </span>
+                                <span className="text-gray-600">
+                                  <strong>Questions:</strong> {completed.totalQuestions}
+                                </span>
+                                <span className="text-gray-500 text-xs">
+                                  {new Date(completed.completedAt).toLocaleDateString()}
+                                </span>
+                              </div>
                             </div>
+                            <Button
+                              onClick={() => handleViewSummary(completed.runId)}
+                              color="success"
+                              size="md"
+                              className={`ml-4 ${colors.buttonGradient} ${colors.buttonHover} text-white rounded-lg font-semibold shadow-md transition-all`}
+                            >
+                              View Summary
+                            </Button>
                           </div>
-                          <Button
-                            onClick={() => handleViewSummary(completed.runId)}
-                            color="success"
-                            size="md"
-                            className="ml-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white rounded-lg font-semibold shadow-md transition-all"
-                          >
-                            View Summary
-                          </Button>
-                        </div>
-                      </CardBody>
-                    </Card>
-                  ))}
+                        </CardBody>
+                      </Card>
+                    )
+                  })}
                 </div>
               </CardBody>
             </Card>
@@ -818,7 +912,7 @@ function App() {
           {knownRevisions.length === 0 && completedRuns.length === 0 && (
             <Card className="rounded-xl border-2 border-gray-200 shadow-lg bg-white">
               <CardBody className="text-center py-8">
-                <DocumentTextIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                <Logo size="xl" className="mx-auto mb-4 opacity-50" />
                 <p className="text-gray-600">No revisions yet. Click the button above to create one!</p>
               </CardBody>
             </Card>
@@ -842,7 +936,7 @@ function App() {
           <Card className="rounded-xl border-2 border-orange-100 shadow-lg bg-white mb-4">
             <CardBody className="p-6">
               <div className="flex items-start gap-3">
-                <DocumentTextIcon className="w-12 h-12 text-orange-600 flex-shrink-0" />
+                <Logo size="lg" className="flex-shrink-0" />
                 <div>
                   <h2 className="text-2xl font-semibold text-orange-900 mb-2">Set Up a Revision</h2>
                   <p className="text-sm text-gray-700">
@@ -1055,16 +1149,14 @@ function App() {
 
       {revision && (
         <div className="mb-6">
-          <div className="mb-4 flex items-start gap-3">
-            <Logo size="md" className="flex-shrink-0" />
-            <div>
-              <h2 className="text-2xl font-semibold text-orange-900 mb-2">Let's Revise!</h2>
-              <p className="text-sm text-gray-700">
-                <strong className="text-orange-800">{revision.name}</strong> • <span className="text-cyan-700">{revision.subject}</span>
-              </p>
-            </div>
-          </div>
+          
           <div className="rounded-xl border-2 border-orange-100 shadow-lg bg-white p-6">
+          <div className="mb-4">
+            <h2 className="text-2xl font-semibold text-orange-900 mb-2">Let's Revise!</h2>
+            <p className="text-sm text-gray-700">
+              <strong className="text-orange-800">{revision.name}</strong> • <span className="text-cyan-700">{revision.subject}</span>
+            </p>
+          </div>
             {error && (
               <div className="p-3 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-lg mb-4">
                 <p className="text-sm text-red-800 font-medium">{error}</p>
@@ -1274,8 +1366,7 @@ function App() {
                 </div>
                 <Card className="bg-gradient-to-r from-orange-500 via-red-600 to-orange-600 text-white rounded-xl shadow-xl border-2 border-orange-300">
                   <CardBody>
-                    <div className="flex items-center gap-3 mb-2">
-                      <Logo size="md" />
+                    <div className="mb-2">
                       <h3 className="text-2xl font-bold">Summary</h3>
                     </div>
                     <p className="text-3xl font-bold">

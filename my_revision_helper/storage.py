@@ -473,6 +473,7 @@ class StorageAdapter:
                             "completedAt": run.created_at.isoformat(),
                             "score": accuracy,
                             "totalQuestions": len(answers),
+                            "threshold": revision.accuracy_threshold,
                         })
             
             return completed_runs
@@ -515,6 +516,7 @@ class StorageAdapter:
                             "completedAt": run_data.get("createdAt", ""),
                             "score": accuracy,
                             "totalQuestions": len(answers),
+                            "threshold": revision.get("accuracyThreshold", 80),
                         })
             
             return completed_runs
