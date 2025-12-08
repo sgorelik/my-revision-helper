@@ -44,6 +44,13 @@ from .file_processing import process_uploaded_files
 from .auth import get_current_user_optional
 from .database import get_db, init_db
 from .storage import StorageAdapter, get_or_create_user
+from .langfuse_client import (
+    fetch_prompt,
+    render_prompt,
+    create_trace,
+    create_generation,
+    get_langfuse_environment,
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -262,8 +269,16 @@ def get_openai_model() -> str:
 def get_ai_context() -> str:
     """
     Get general context/instructions to always include in AI prompts.
-    Can be configured via AI_CONTEXT environment variable, or uses a sensible default.
+    Tries to fetch from Langfuse first, then falls back to AI_CONTEXT env var or default.
     """
+    # Try to fetch from Langfuse first
+    langfuse_prompt_data = fetch_prompt("general-context")
+    if langfuse_prompt_data and langfuse_prompt_data.get("prompt"):
+        context = langfuse_prompt_data["prompt"]
+        logger.info("Using general-context prompt from Langfuse")
+        return context
+    
+    # Fallback to environment variable or default
     context = os.getenv(
         "AI_CONTEXT",
         (
@@ -279,6 +294,8 @@ def get_ai_context() -> str:
 def get_marking_context(revision_context: Optional[str] = None) -> str:
     """
     Get context specifically for marking/evaluation.
+    Fetches base marking context and revision context template from Langfuse,
+    then combines them if revision_context is provided.
     
     Args:
         revision_context: Optional revision description and extracted text from uploaded files.
@@ -287,58 +304,78 @@ def get_marking_context(revision_context: Optional[str] = None) -> str:
     Returns:
         String containing marking-specific instructions with three-tier scoring guidance.
     """
-    base_instructions = (
-        "You are a fair and thorough tutor grading a student's answer. "
-        "Evaluate the answer based on what the student was actually expected to know from the provided material. "
-        "\n\n"
-        "SCORING GUIDELINES:\n"
-        "- Full Marks: Award when the answer is completely or nearly correct, demonstrates full understanding, "
-        "and includes all required elements that were available in the revision material. The answer should be "
-        "accurate, complete, and show clear comprehension of the concept as presented in the material.\n"
-        "- Partial Marks: Award when the answer shows some understanding but is incomplete, "
-        "partially correct, or missing key elements. CRITICAL: If the revision material did not contain "
-        "sufficient depth or detail for the student to have known a specific piece of information, do NOT "
-        "penalize them for missing it. Award Partial Marks if they demonstrate understanding of what WAS "
-        "in the material, even if their answer is incomplete. Examples include: correct concept but wrong "
-        "details (only if those details were in the material), correct answer but missing explanation "
-        "(if explanation was in material), partially correct calculations, or correct approach but minor errors.\n"
-        "- Incorrect: Award when the answer is fundamentally wrong, shows misunderstanding of "
-        "the concept as presented in the material, or is completely off-topic. The answer demonstrates "
-        "little to no understanding of what was provided.\n"
-        "\n"
-        "IMPORTANT FAIRNESS RULES:\n"
-        "- If revision material was provided, use it as a reference, but do NOT restrict answers to only what was in the material.\n"
-        "- CRITICAL: Do NOT penalize students if they provide a correct answer using information NOT in the supplied materials. "
-        "If a student gives a generally correct answer (even if the specific example or detail wasn't in the material), "
-        "award Full Marks. For example, if the PDF discussed specific gases but the student correctly answers with a different "
-        "gas that wasn't mentioned, this is still a correct answer and should receive Full Marks.\n"
-        "- Do NOT penalize students for information that was NOT in the provided revision material when their answer is missing details.\n"
-        "- If the material lacks depth on a topic, be lenient - award Partial Marks or even Full Marks if "
-        "the student demonstrates understanding of what WAS available, even if the answer seems incomplete "
-        "from a general knowledge perspective.\n"
-        "- Be generous with Partial Marks when students show genuine understanding of the provided material, "
-        "even if their answer isn't perfect.\n"
-        "- Award Full Marks for any answer that is generally correct and demonstrates proper understanding, "
-        "regardless of whether the specific information was in the revision material.\n"
-        "\n"
-        "Provide clear explanations for the score awarded, referencing what was (or wasn't) in the revision material."
-    )
-    
-    if revision_context:
-        return (
-            f"{base_instructions}\n\n"
-            "REVISION MATERIAL PROVIDED:\n"
-            "The following is the revision material (description and/or extracted text from uploaded files) "
-            "that was available to the student:\n\n"
-            f"{revision_context}\n\n"
-            "When evaluating the student's answer:\n"
-            "- Use the material above as a reference for what was provided, but do NOT restrict correct answers to only what's in the material.\n"
-            "- If a student provides a correct answer using information NOT in the material (e.g., mentions a gas not in the PDF but still correctly answers the question), "
-            "award Full Marks - they demonstrated correct understanding even if from their own knowledge.\n"
-            "- If the student's answer is incomplete but the material itself didn't provide complete information, "
-            "be lenient in your scoring - award Partial Marks or Full Marks based on understanding shown.\n"
-            "- Award marks based on correctness and understanding, not on whether every detail matches the material exactly."
+    # Try to fetch base marking context from Langfuse
+    marking_context_data = fetch_prompt("marking-context")
+    if marking_context_data and marking_context_data.get("prompt"):
+        base_instructions = marking_context_data["prompt"]
+        logger.info("Using marking-context prompt from Langfuse")
+    else:
+        # Fallback to hardcoded base instructions
+        base_instructions = (
+            "You are a fair and thorough tutor grading a student's answer. "
+            "Evaluate the answer based on what the student was actually expected to know from the provided material. "
+            "\n\n"
+            "SCORING GUIDELINES:\n"
+            "- Full Marks: Award when the answer is completely or nearly correct, demonstrates full understanding, "
+            "and includes all required elements that were available in the revision material. The answer should be "
+            "accurate, complete, and show clear comprehension of the concept as presented in the material.\n"
+            "- Partial Marks: Award when the answer shows some understanding but is incomplete, "
+            "partially correct, or missing key elements. CRITICAL: If the revision material did not contain "
+            "sufficient depth or detail for the student to have known a specific piece of information, do NOT "
+            "penalize them for missing it. Award Partial Marks if they demonstrate understanding of what WAS "
+            "in the material, even if their answer is incomplete. Examples include: correct concept but wrong "
+            "details (only if those details were in the material), correct answer but missing explanation "
+            "(if explanation was in material), partially correct calculations, or correct approach but minor errors.\n"
+            "- Incorrect: Award when the answer is fundamentally wrong, shows misunderstanding of "
+            "the concept as presented in the material, or is completely off-topic. The answer demonstrates "
+            "little to no understanding of what was provided.\n"
+            "\n"
+            "IMPORTANT FAIRNESS RULES:\n"
+            "- If revision material was provided, use it as a reference, but do NOT restrict answers to only what was in the material.\n"
+            "- CRITICAL: Do NOT penalize students if they provide a correct answer using information NOT in the supplied materials. "
+            "If a student gives a generally correct answer (even if the specific example or detail wasn't in the material), "
+            "award Full Marks. For example, if the PDF discussed specific gases but the student correctly answers with a different "
+            "gas that wasn't mentioned, this is still a correct answer and should receive Full Marks.\n"
+            "- Do NOT penalize students for information that was NOT in the provided revision material when their answer is missing details.\n"
+            "- If the material lacks depth on a topic, be lenient - award Partial Marks or even Full Marks if "
+            "the student demonstrates understanding of what WAS available, even if the answer seems incomplete "
+            "from a general knowledge perspective.\n"
+            "- Be generous with Partial Marks when students show genuine understanding of the provided material, "
+            "even if their answer isn't perfect.\n"
+            "- Award Full Marks for any answer that is generally correct and demonstrates proper understanding, "
+            "regardless of whether the specific information was in the revision material.\n"
+            "\n"
+            "Provide clear explanations for the score awarded, referencing what was (or wasn't) in the revision material."
         )
+    
+    # If revision_context is provided, fetch and render the revision context template
+    if revision_context:
+        revision_template_data = fetch_prompt("revision-context-template")
+        if revision_template_data and revision_template_data.get("prompt"):
+            revision_template = revision_template_data["prompt"]
+            # Render the template with the actual revision_context content
+            revision_section = render_prompt(
+                revision_template,
+                {"revision_context": revision_context}
+            )
+            logger.info("Using revision-context-template prompt from Langfuse")
+        else:
+            # Fallback to hardcoded revision context section
+            revision_section = (
+                "REVISION MATERIAL PROVIDED:\n"
+                "The following is the revision material (description and/or extracted text from uploaded files) "
+                "that was available to the student:\n\n"
+                f"{revision_context}\n\n"
+                "When evaluating the student's answer:\n"
+                "- Use the material above as a reference for what was provided, but do NOT restrict correct answers to only what's in the material.\n"
+                "- If a student provides a correct answer using information NOT in the material (e.g., mentions a gas not in the PDF but still correctly answers the question), "
+                "award Full Marks - they demonstrated correct understanding even if from their own knowledge.\n"
+                "- If the student's answer is incomplete but the material itself didn't provide complete information, "
+                "be lenient in your scoring - award Partial Marks or Full Marks based on understanding shown.\n"
+                "- Award marks based on correctness and understanding, not on whether every detail matches the material exactly."
+            )
+        
+        return f"{base_instructions}\n\n{revision_section}"
     
     return base_instructions
 
@@ -693,28 +730,97 @@ async def start_run(
     else:
         try:
             logger.info(f"Generating {desired_count} questions for revision {revision_id} with description: {description[:100]}...")
-            general_context = get_ai_context()
-            prompt = (
-                f"{general_context}\n\n"
-                "Generate concise practice questions for a student "
-                "based on the following revision description. "
-                "Return each question on its own line, with no numbering or extra text.\n\n"
-                f"Revision description:\n{description}\n\n"
-                f"Number of questions: {desired_count}"
+            
+            # Get user ID for tracing
+            user_id = user.get("user_id") if user else None
+            
+            # Create Langfuse trace
+            trace = create_trace(
+                name="question-generation",
+                user_id=user_id,
+                revision_id=revision_id,
+                run_id=run_id,
+                metadata={
+                    "desired_count": desired_count,
+                    "subject": revision.get("subject") if revision else None,
+                },
             )
-            openai_response = client.chat.completions.create(
-                model=get_openai_model(),
-                messages=[
+            
+            # Get subject for subject-specific prompts
+            subject = revision.get("subject") if revision else None
+            
+            # Try to fetch prompt from Langfuse, fallback to hardcoded if not available
+            # Will try subject-specific prompt first (e.g., 'question-generation-mathematics'),
+            # then fall back to generic 'question-generation'
+            langfuse_prompt_data = fetch_prompt("question-generation", subject=subject)
+            
+            if langfuse_prompt_data and langfuse_prompt_data.get("prompt"):
+                # Use Langfuse prompt
+                prompt_template = langfuse_prompt_data["prompt"]
+                general_context = get_ai_context()
+                prompt = render_prompt(
+                    prompt_template,
                     {
-                        "role": "system",
-                        "content": "You generate short, clear study questions only.",
+                        "general_context": general_context,
+                        "description": description,
+                        "desired_count": desired_count,
                     },
-                    {"role": "user", "content": prompt},
-                ],
+                )
+                system_message = "You generate short, clear study questions only."
+                logger.info("Using Langfuse prompt for question generation")
+            else:
+                # Fallback to hardcoded prompt
+                general_context = get_ai_context()
+                prompt = (
+                    f"{general_context}\n\n"
+                    "Generate concise practice questions for a student "
+                    "based on the following revision description. "
+                    "Return each question on its own line, with no numbering or extra text.\n\n"
+                    f"Revision description:\n{description}\n\n"
+                    f"Number of questions: {desired_count}"
+                )
+                system_message = "You generate short, clear study questions only."
+                logger.info("Using fallback prompt for question generation (Langfuse prompt not found)")
+            
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ]
+            
+            model = get_openai_model()
+            openai_response = client.chat.completions.create(
+                model=model,
+                messages=messages,
                 max_tokens=desired_count * 64,
                 temperature=0.7,
             )
             content = openai_response.choices[0].message.content or ""
+            
+            # Log to Langfuse
+            if trace:
+                create_generation(
+                    trace=trace,
+                    name="openai-question-generation",
+                    model=model,
+                    input_data={"messages": messages},
+                    output=content,
+                    metadata={
+                        "max_tokens": desired_count * 64,
+                        "temperature": 0.7,
+                    },
+                )
+                # End the trace after generation is complete
+                try:
+                    trace.end()
+                    logger.debug("Ended Langfuse trace after generation")
+                    # Flush one more time to ensure everything is sent
+                    from .langfuse_client import get_langfuse
+                    client = get_langfuse()
+                    if client:
+                        client.flush()
+                except Exception as e:
+                    logger.warning(f"Failed to end trace: {e}")
+            
             logger.info(f"OpenAI response received: {content[:200]}...")
             lines = [ln.strip("- ").strip() for ln in (content or "").splitlines()]
             lines = [ln for ln in lines if ln]
@@ -939,22 +1045,65 @@ async def submit_answer(
     
     if client and question_text:
         try:
+            # Get user ID for tracing
+            user_id = user.get("user_id") if user else None
+            revision_id = run.get("revisionId") if run else None
+            
+            # Create Langfuse trace
+            trace = create_trace(
+                name="answer-marking",
+                user_id=user_id,
+                revision_id=revision_id,
+                run_id=run_id,
+                question_id=payload.questionId,
+                metadata={
+                    "subject": revision.get("subject") if revision else None,
+                },
+            )
+            
             # Use marking context with revision material for RAG-style evaluation
             marking_context = get_marking_context(revision_context=revision_context)
             
-            # Get subject for subject-specific JSON instructions
+            # Get subject for subject-specific prompts and JSON instructions
             subject = None
             if revision:
                 subject = revision.get("subject")
             
             json_instructions = get_marking_json_instructions(subject=subject)
             
-            prompt = (
-                f"{marking_context}\n\n"
-                "Question: " + question_text + "\n"
-                "Student answer: " + payload.answer + "\n\n"
-                f"{json_instructions}"
-            )
+            # Try to fetch prompt from Langfuse, fallback to hardcoded if not available
+            # Will try subject-specific prompt first (e.g., 'answer-marking-mathematics'),
+            # then fall back to generic 'answer-marking'
+            langfuse_prompt_data = fetch_prompt("answer-marking", subject=subject)
+            
+            if langfuse_prompt_data and langfuse_prompt_data.get("prompt"):
+                # Use Langfuse prompt
+                prompt_template = langfuse_prompt_data["prompt"]
+                general_context = get_ai_context()
+                prompt = render_prompt(
+                    prompt_template,
+                    {
+                        "general_context": general_context,
+                        "marking_context": marking_context,
+                        "question": question_text,
+                        "student_answer": payload.answer,
+                        "json_instructions": json_instructions,
+                    },
+                )
+                system_message = "You are a tutor who returns only valid JSON."
+                logger.info("Using Langfuse prompt for answer marking")
+            else:
+                # Fallback to hardcoded prompt
+                general_context = get_ai_context()
+                prompt = (
+                    f"{general_context}\n\n"
+                    f"{marking_context}\n\n"
+                    "Question: " + question_text + "\n"
+                    "Student answer: " + payload.answer + "\n\n"
+                    f"{json_instructions}"
+                )
+                system_message = "You are a tutor who returns only valid JSON."
+                logger.info("Using fallback prompt for answer marking (Langfuse prompt not found)")
             
             # Log full input for debugging
             logger.info("=" * 80)
@@ -966,23 +1115,47 @@ async def submit_answer(
             logger.info(f"Full Prompt:\n{prompt}")
             logger.info("=" * 80)
             
-            system_message = "You are a tutor who returns only valid JSON."
             logger.info(f"System Message: {system_message}")
-            logger.info(f"Model: {get_openai_model()}")
+            model = get_openai_model()
+            logger.info(f"Model: {model}")
+            
+            messages = [
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": prompt},
+            ]
             
             openai_response = client.chat.completions.create(
-                model=get_openai_model(),
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system_message,
-                    },
-                    {"role": "user", "content": prompt},
-                ],
+                model=model,
+                messages=messages,
                 max_tokens=256,
                 temperature=0.0,
             )
             content = openai_response.choices[0].message.content or ""
+            
+            # Log to Langfuse
+            if trace:
+                create_generation(
+                    trace=trace,
+                    name="openai-answer-marking",
+                    model=model,
+                    input_data={"messages": messages},
+                    output=content,
+                    metadata={
+                        "max_tokens": 256,
+                        "temperature": 0.0,
+                    },
+                )
+                # End the trace after generation is complete
+                try:
+                    trace.end()
+                    logger.debug("Ended Langfuse trace after generation")
+                    # Flush one more time to ensure everything is sent
+                    from .langfuse_client import get_langfuse
+                    client = get_langfuse()
+                    if client:
+                        client.flush()
+                except Exception as e:
+                    logger.warning(f"Failed to end trace: {e}")
             
             # Log full output for debugging
             logger.info("=" * 80)
