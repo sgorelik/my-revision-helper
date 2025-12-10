@@ -1281,21 +1281,20 @@ async def get_summary(
     """
     Summarise all answered questions for this run.
     
-    - Only authenticated users can view summaries
-    - Non-authenticated users cannot access run summaries
+    - Authenticated users can view summaries of their runs
+    - Non-authenticated users can view summaries of runs in their current session
+    - Non-authenticated users cannot view summaries from other sessions
     """
     from fastapi import HTTPException
     
-    # Only authenticated users can view summaries
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required to view run summaries")
-    
     storage = StorageAdapter(user, db, session_id)
     
-    # Verify run access
+    # Verify run access (storage.get_run handles session-based access control)
+    # For authenticated users: checks user_id
+    # For anonymous users: checks session_id
     run = storage.get_run(run_id)
     if not run:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found or access denied")
     
     revision_id = run["revisionId"]
     

@@ -15,11 +15,6 @@ import {
   TableCell,
   Select,
   SelectItem,
-  Modal,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
 } from '@heroui/react'
 import {
   PhotoIcon,
@@ -32,6 +27,7 @@ import {
   ArrowRightIcon,
   PlusIcon,
   ExclamationTriangleIcon,
+  FlagIcon,
 } from '@heroicons/react/24/outline'
 import Logo from './Logo'
 import { useAuth } from './auth'
@@ -332,6 +328,7 @@ function App() {
   const [answerError, setAnswerError] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<{isOpen: boolean; revisionId: string | null}>({isOpen: false, revisionId: null})
 
+
   const loadRevisions = async () => {
     try {
       const token = await getToken()
@@ -357,9 +354,13 @@ function App() {
     }
   }
 
-  const handleDeleteRevision = async (revisionId: string) => {
+  const handleDeleteRevision = (revisionId: string) => {
     if (!isAuthenticated) {
       setError('You must be logged in to delete revisions')
+      return
+    }
+    if (!revisionId) {
+      console.error('Cannot delete revision: revisionId is missing')
       return
     }
     // Open confirmation modal
@@ -541,19 +542,19 @@ function App() {
 
   const handleFinishEarly = async () => {
     if (!run) return
-    if (!isAuthenticated) {
-      setError('You must be logged in to finish and view summaries')
-      return
-    }
     try {
+      // Allow viewing summary for current session run, even without authentication
+      // Authentication is only required for viewing summaries from other sessions
       const token = await getToken()
       const s = await getRunSummary(run.id, token)
       setSummary(s)
       setQuestion(null)
       setAnswer('')
       setLastResult(null)
-      // Reload completed runs after finishing
-      await loadCompletedRuns()
+      // Reload completed runs after finishing (only if authenticated)
+      if (isAuthenticated) {
+        await loadCompletedRuns()
+      }
     } catch (err: any) {
       setError(err.message ?? 'Failed to load summary')
     }
@@ -809,7 +810,13 @@ function App() {
                           </Button>
                           {isAuthenticated && r.id && (
                           <Button
-                            onClick={() => r.id && handleDeleteRevision(r.id)}
+                            onClick={(e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              if (r.id) {
+                                handleDeleteRevision(r.id)
+                              }
+                            }}
                             size="sm"
                             variant="flat"
                             className={`border border-red-300 text-red-700 bg-white hover:bg-red-50 rounded-lg font-semibold transition-all ${buttonWithIconClassName}`}
@@ -1137,7 +1144,7 @@ function App() {
         </div>
       )}
 
-      {revision && (
+      {revision && !summary && (
         <div className="mb-6">
           {error && (
             <div className="mb-4 p-3 bg-red-50 border border-red-300 rounded">
@@ -1145,9 +1152,7 @@ function App() {
             </div>
           )}
 
-          {!summary && (
-            <>
-              {question ? (
+          {question ? (
                 <div className="space-y-4">
                   {question.text.startsWith('ERROR:') ? (
                     <Card className="border border-orange-300 shadow-sm bg-white">
@@ -1297,14 +1302,6 @@ function App() {
                           )}
                           <div className="flex gap-2 mt-4 pt-4 border-t border-gray-200">
                             <Button
-                              onClick={handleFinishEarly}
-                              color="secondary"
-                              variant="flat"
-                              className="flex-1 rounded-lg font-semibold border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-all"
-                            >
-                              Finish Now
-                            </Button>
-                            <Button
                               onClick={handleNextQuestion}
                               color="primary"
                               className={`flex-1 rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white shadow-md transition-all ${buttonWithIconClassName}`}
@@ -1312,6 +1309,15 @@ function App() {
                               endContent={!isLoadingQuestion && <ArrowRightIcon className="w-4 h-4" />}
                             >
                               Next Question
+                            </Button>
+                            <Button
+                              onPress={handleFinishEarly}
+                              color="secondary"
+                              variant="flat"
+                              className="flex-none px-4 rounded-lg font-semibold border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-all"
+                              startContent={<FlagIcon className="w-4 h-4" />}
+                            >
+                              Finish Now
                             </Button>
                           </div>
                         </CardBody>
@@ -1353,129 +1359,129 @@ function App() {
                     </CardBody>
                   </Card>
                 )}
-              </>
-            )}
-
-            {summary && isAuthenticated && (
-              <div className="space-y-4">
-                <Card className="bg-gradient-to-r from-orange-500 via-red-600 to-orange-600 text-white rounded-lg shadow-md border-2 border-orange-300">
-                  <CardBody>
-                    <div className="mb-2">
-                      <h3 className="text-2xl font-bold">Summary</h3>
-                    </div>
-                    <p className="text-3xl font-bold">
-                      Overall Accuracy: {summary.overallAccuracy.toFixed(1)}%
-                    </p>
-                  </CardBody>
-                </Card>
-
-                <Table 
-                  aria-label="Answer summary"
-                  classNames={{
-                    wrapper: "border border-gray-200 rounded-lg shadow-sm",
-                    th: "bg-gray-50 text-gray-700 font-semibold border-b border-gray-200",
-                    td: "border-b border-gray-100",
-                  }}
-                >
-                  <TableHeader>
-                    <TableColumn className="text-right">#</TableColumn>
-                    <TableColumn>Question</TableColumn>
-                    <TableColumn>Your Answer</TableColumn>
-                    <TableColumn>Correct Answer</TableColumn>
-                    <TableColumn>Result</TableColumn>
-                  </TableHeader>
-                  <TableBody>
-                    {summary.questions.map((q, idx) => {
-                      const rowBgColor = q.score === 'Full Marks' 
-                        ? 'bg-green-50' 
-                        : q.score === 'Partial Marks'
-                        ? 'bg-yellow-50'
-                        : 'bg-red-50'
-                      return (
-                        <TableRow 
-                          key={q.questionId} 
-                          className={rowBgColor}
-                        >
-                          <TableCell className="text-right font-medium">{idx + 1}</TableCell>
-                          <TableCell className="font-medium">{q.questionText || 'Question not available'}</TableCell>
-                          <TableCell>{q.studentAnswer}</TableCell>
-                          <TableCell className="font-semibold">{q.correctAnswer}</TableCell>
-                          <TableCell>
-                            <Chip
-                              color={
-                                q.score === 'Full Marks' 
-                                  ? 'success' 
-                                  : q.score === 'Partial Marks'
-                                  ? 'warning'
-                                  : 'danger'
-                              }
-                              variant="flat"
-                              size="sm"
-                            >
-                              {q.score || (q.isCorrect ? 'Correct' : 'Incorrect')}
-                            </Chip>
-                          </TableCell>
-                        </TableRow>
-                      )
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
           </div>
       )}
-      </div>
 
-      {/* Confirmation Modal for Delete */}
-      <Modal
-        isOpen={deleteConfirm.isOpen}
-        onClose={() => setDeleteConfirm({isOpen: false, revisionId: null})}
-        placement="center"
-        classNames={{
-          base: "border-2 border-orange-200 bg-white",
-          backdrop: "bg-black/50 backdrop-opacity-40",
-          header: "border-b border-orange-200",
-          body: "py-6",
-          footer: "border-t border-orange-200",
-          closeButton: "hover:bg-orange-50 active:bg-orange-100",
-        }}
-      >
-        <ModalContent>
-          {(onClose) => (
-            <>
-              <ModalHeader className="flex flex-col gap-1">
-                <div className="flex items-center gap-2">
-                  <ExclamationTriangleIcon className="w-6 h-6 text-orange-600" />
-                  <h3 className="text-xl font-semibold text-gray-900">Confirm Deletion</h3>
+      {/* Summary page - shown when viewing from completed revisions or after finishing a run */}
+      {summary && (
+        <div className="mb-6">
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-300 rounded">
+              <p className="text-sm text-red-800 font-medium">{error}</p>
+            </div>
+          )}
+          <div className="space-y-4">
+            <h2 className="text-2xl font-semibold text-gray-900 mb-2">Summary</h2>
+            <Card className="bg-gradient-to-r from-orange-500 via-red-600 to-orange-600 text-white rounded-lg shadow-md border-2 border-orange-300">
+              <CardBody>
+                <div className="mb-2">
+                  <h3 className="text-2xl font-bold">Summary</h3>
                 </div>
-              </ModalHeader>
-              <ModalBody>
-                <p className="text-gray-700">
-                  Are you sure you want to delete this revision? This action cannot be undone.
+                <p className="text-3xl font-bold">
+                  Overall Accuracy: {summary.overallAccuracy.toFixed(1)}%
                 </p>
-              </ModalBody>
-              <ModalFooter>
+              </CardBody>
+            </Card>
+
+            <Table 
+              aria-label="Answer summary"
+              classNames={{
+                wrapper: "border border-gray-200 rounded-lg shadow-sm",
+                th: "bg-gray-50 text-gray-700 font-semibold border-b border-gray-200",
+                td: "border-b border-gray-100",
+              }}
+            >
+              <TableHeader>
+                <TableColumn className="text-right">#</TableColumn>
+                <TableColumn>Question</TableColumn>
+                <TableColumn>Your Answer</TableColumn>
+                <TableColumn>Correct Answer</TableColumn>
+                <TableColumn>Result</TableColumn>
+              </TableHeader>
+              <TableBody>
+                {summary.questions.map((q, idx) => {
+                  const rowBgColor = q.score === 'Full Marks' 
+                    ? 'bg-green-50' 
+                    : q.score === 'Partial Marks'
+                    ? 'bg-yellow-50'
+                    : 'bg-red-50'
+                  return (
+                    <TableRow 
+                      key={q.questionId} 
+                      className={rowBgColor}
+                    >
+                      <TableCell className="text-right font-medium">{idx + 1}</TableCell>
+                      <TableCell className="max-w-md">
+                        <p className="text-sm text-gray-800 line-clamp-3">{q.questionText || `Question ${idx + 1}`}</p>
+                      </TableCell>
+                      <TableCell className="max-w-md">
+                        <p className="text-sm text-gray-700 line-clamp-3">{q.studentAnswer || 'No answer provided'}</p>
+                      </TableCell>
+                      <TableCell className="max-w-md">
+                        <p className="text-sm font-semibold text-gray-900 line-clamp-3">{q.correctAnswer}</p>
+                      </TableCell>
+                      <TableCell>
+                        <Chip
+                          color={
+                            q.score === 'Full Marks' 
+                              ? 'success' 
+                              : q.score === 'Partial Marks'
+                              ? 'warning'
+                              : 'danger'
+                          }
+                          variant="flat"
+                          size="sm"
+                        >
+                          {q.score || (q.isCorrect ? 'Correct' : 'Incorrect')}
+                        </Chip>
+                      </TableCell>
+                    </TableRow>
+                  )
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
+      </div>
+      
+      {/* Confirmation Modal for Delete */}
+      {deleteConfirm.isOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center">
+          <div 
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setDeleteConfirm({isOpen: false, revisionId: null})}
+          />
+          <div className="relative z-[10000] bg-white rounded-lg border-2 border-orange-200 shadow-xl max-w-md w-full mx-4">
+            <div className="p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <ExclamationTriangleIcon className="w-6 h-6 text-orange-600" />
+                <h3 className="text-xl font-semibold text-gray-900">Confirm Deletion</h3>
+              </div>
+              <p className="text-gray-700 mb-6">
+                Are you sure you want to delete this revision? This action cannot be undone.
+              </p>
+              <div className="flex gap-3 justify-end">
                 <Button
                   variant="flat"
-                  onPress={onClose}
+                  onPress={() => setDeleteConfirm({isOpen: false, revisionId: null})}
                   className="border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
                 >
                   Cancel
                 </Button>
                 <Button
-                  onPress={() => {
-                    confirmDeleteRevision()
-                    onClose()
+                  onPress={async () => {
+                    await confirmDeleteRevision()
                   }}
                   className="bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white rounded-lg font-semibold shadow-md transition-all"
                 >
                   Delete
                 </Button>
-              </ModalFooter>
-            </>
-          )}
-        </ModalContent>
-      </Modal>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
