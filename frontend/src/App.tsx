@@ -691,7 +691,7 @@ function App() {
               aria-label="Home"
             >
               <Logo size="md" />
-              <span className="text-xl font-semibold text-orange-900 hidden sm:inline">My Revision Helper</span>
+              <span className="text-xl font-semibold text-orange-900 hidden sm:inline">MY PREP PAL</span>
             </button>
 
             {/* Right side - Auth actions */}
