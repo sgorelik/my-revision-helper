@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+/* Ensure all buttons and clickable elements show pointer cursor */
+button,
+[role="button"],
+a,
+[onclick] {
+  cursor: pointer;
+}
+
+/* Ensure disabled buttons show not-allowed cursor */
+button:disabled,
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
+}

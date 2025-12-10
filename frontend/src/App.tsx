@@ -15,6 +15,11 @@ import {
   TableCell,
   Select,
   SelectItem,
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
 } from '@heroui/react'
 import {
   PhotoIcon,
@@ -23,7 +28,10 @@ import {
   XMarkIcon,
   DocumentIcon,
   PresentationChartBarIcon,
-  HomeIcon,
+  TrashIcon,
+  ArrowRightIcon,
+  PlusIcon,
+  ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline'
 import Logo from './Logo'
 import { useAuth } from './auth'
@@ -287,21 +295,26 @@ function App() {
 
   // Shared styling for all Input and Textarea components - Calculator color scheme
   const inputClassNames = {
-    label: "mb-2 ml-3 text-orange-600",
-    input: "rounded-lg ml-2 pr-2 mb-2 mt-2 text-gray-700",
-    inputWrapper: "rounded-lg border-2 border-orange-200 hover:border-orange-400 pr-4",
-    placeholder: "ml-3 text-gray-400"
+    label: "mb-2 text-orange-600",
+    input: "px-3 py-2 text-gray-700",
+    inputWrapper: "rounded-lg border-2 border-orange-200 hover:border-orange-400",
+    placeholder: "px-3 text-gray-400"
   }
 
   // Styling for Select dropdown to match Input components - Calculator color scheme
   const selectClassNames = {
-    label: "mb-2 ml-3 text-orange-600",
-    trigger: "rounded-lg border-2 border-orange-200 hover:border-orange-400 pr-4 min-h-unit-12",
-    value: "ml-2 pr-2 text-gray-700",
-    popoverContent: "rounded-lg border-2 border-orange-200 bg-white shadow-lg p-3 max-w-full",
+    label: "mb-2 text-orange-600",
+    trigger: "rounded-lg border-2 border-orange-200 hover:border-orange-400 px-3 min-h-unit-12",
+    value: "px-3 text-gray-700",
+    popoverContent: "rounded-lg border-2 border-orange-200 bg-white shadow-md p-3 max-w-full",
     listbox: "bg-white flex flex-wrap gap-2 max-w-full",
     listboxItem: "bg-white text-gray-900 min-h-0 h-auto",
   }
+
+  // Shared styling for buttons with icons - prevents icon and text from wrapping
+  // base: "inline-flex w-auto" lets the button size to its content instead of squeezing
+  // content: "gap-1 whitespace-nowrap" keeps the icon and text together on one line
+  const buttonWithIconClassName = "inline-flex w-auto [&>span]:gap-1 [&>span]:whitespace-nowrap"
 
   // Subjects list (loaded from backend)
   const [subjects, setSubjects] = useState<string[]>([])
@@ -312,8 +325,12 @@ function App() {
   const [summary, setSummary] = useState<RevisionSummary | null>(null)
   const [totalQuestions, setTotalQuestions] = useState<number>(0)
   const [currentQuestionNumber, setCurrentQuestionNumber] = useState<number>(0)
+  const [lastAnsweredQuestionId, setLastAnsweredQuestionId] = useState<string | null>(null)
   const [isLoadingQuestion, setIsLoadingQuestion] = useState(false)
   const [userImageError, setUserImageError] = useState(false)
+  const [formErrors, setFormErrors] = useState<{name?: string; subject?: string; description?: string}>({})
+  const [answerError, setAnswerError] = useState<string | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<{isOpen: boolean; revisionId: string | null}>({isOpen: false, revisionId: null})
 
   const loadRevisions = async () => {
     try {
@@ -345,18 +362,23 @@ function App() {
       setError('You must be logged in to delete revisions')
       return
     }
-    if (!confirm('Are you sure you want to delete this revision? This action cannot be undone.')) {
-      return
-    }
+    // Open confirmation modal
+    setDeleteConfirm({isOpen: true, revisionId})
+  }
+
+  const confirmDeleteRevision = async () => {
+    if (!deleteConfirm.revisionId) return
     try {
       setError(null)
       const token = await getToken()
-      await deleteRevision(revisionId, token)
+      await deleteRevision(deleteConfirm.revisionId, token)
       // Reload revisions after deletion
       await loadRevisions()
       await loadCompletedRuns()
+      setDeleteConfirm({isOpen: false, revisionId: null})
     } catch (err: any) {
       setError(err.message ?? 'Failed to delete revision')
+      setDeleteConfirm({isOpen: false, revisionId: null})
     }
   }
 
@@ -389,6 +411,25 @@ function App() {
   const handleCreateRevision = async (e: React.FormEvent) => {
     e.preventDefault()
     setError(null)
+    setFormErrors({})
+    
+    // Validate form
+    const errors: {name?: string; subject?: string; description?: string} = {}
+    if (!form.name.trim()) {
+      errors.name = 'Revision name cannot be left blank'
+    }
+    if (!form.subject) {
+      errors.subject = 'Please select a subject'
+    }
+    if (!form.description.trim() && selectedFiles.length === 0) {
+      errors.description = 'Please provide a description or upload files'
+    }
+    
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors)
+      return
+    }
+    
     setIsCreating(true)
     setIsProcessingFiles(selectedFiles.length > 0)
     try {
@@ -417,6 +458,7 @@ function App() {
         const total = await getQuestionCount(newRun.id, token)
         setTotalQuestions(total)
         setCurrentQuestionNumber(1)
+        setLastAnsweredQuestionId(null)
 
         const q = await getNextQuestion(newRun.id, token)
         setQuestion(q)
@@ -444,15 +486,34 @@ function App() {
   }, [])
 
   const handleSubmitAnswer = async () => {
-    if (!run || !question || !answer.trim()) return
+    if (!run || !question) return
+    
+    // Validate answer
+    if (!answer.trim()) {
+      setAnswerError('Answer cannot be left blank')
+      return
+    }
+    
+    setAnswerError(null)
     setIsSubmittingAnswer(true)
     setError(null)
     try {
       const token = await getToken()
       const res = await submitAnswer(run.id, question.id, answer, token)
       setLastResult(res)
+      
+      // Track that this question has been answered (prevents double-counting on resubmission)
+      if (lastAnsweredQuestionId !== question.id) {
+        setLastAnsweredQuestionId(question.id)
+      }
     } catch (err: any) {
-      setError(err.message ?? 'Failed to submit answer')
+      const errorMessage = err.message ?? 'Failed to submit answer'
+      // Check for model-specific errors
+      if (errorMessage.includes('model') || errorMessage.includes('OpenAI') || errorMessage.includes('API')) {
+        setError(`AI evaluation unavailable: ${errorMessage}. Please try again or contact support.`)
+      } else {
+        setError(errorMessage)
+      }
     } finally {
       setIsSubmittingAnswer(false)
     }
@@ -467,6 +528,7 @@ function App() {
       setQuestion(q)
       setAnswer('')
       setLastResult(null)
+      setLastAnsweredQuestionId(null) // Reset when moving to new question
       if (q) {
         setCurrentQuestionNumber(prev => prev + 1)
       }
@@ -511,6 +573,7 @@ function App() {
         const count = await getQuestionCount(newRun.id, token)
         setTotalQuestions(count)
         setCurrentQuestionNumber(1)
+        setLastAnsweredQuestionId(null)
         const q = await getNextQuestion(newRun.id, token)
         setQuestion(q)
       }
@@ -546,6 +609,7 @@ function App() {
     setAnswer('')
     setLastResult(null)
     setCurrentQuestionNumber(0)
+    setLastAnsweredQuestionId(null)
     setTotalQuestions(0)
     setShowRevisionList(true)
     setCurrentPage('home')
@@ -616,304 +680,217 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-yellow-50 to-orange-50">
-      <div className="max-w-6xl ml-8 mr-auto px-4 pt-6 pb-4">
-        {/* Authentication Banner with Logo and HOME Button */}
-        {!isAuthenticated && import.meta.env.VITE_AUTH0_DOMAIN && (
-          <Card className="rounded-xl border-2 border-yellow-300 shadow-lg bg-gradient-to-r from-yellow-50 via-amber-50 to-orange-50 mb-6">
-            <CardBody className="p-4">
-              <div className="flex items-center justify-end mb-3">
-                {/* HOME Button - Show when not on home dashboard */}
-                {!(currentPage === 'home' && !revision && !summary) && (
-                  <Button
-                    onClick={handleBackToHome}
-                    color="primary"
-                    size="md"
-                    className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all flex items-center gap-2"
-                  >
-                    <HomeIcon className="w-5 h-5" />
-                    Home
-                  </Button>
-                )}
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="flex-shrink-0">
-                    <svg className="h-6 w-6 text-yellow-600" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-base text-yellow-800 font-medium">
-                      <strong>Session-only mode:</strong> Your revisions and progress will not be saved after you close this page.{' '}
-                      <button 
-                        onClick={login}
-                        className="font-semibold underline hover:text-yellow-900 rounded-lg px-2 py-1 transition-all"
-                      >
-                        Sign in to save your work
-                      </button>
-                    </p>
-                  </div>
-                </div>
-                <Button
-                  onClick={login}
-                  color="primary"
-                  size="md"
-                  className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
-                >
-                  Sign In
-                </Button>
-              </div>
-            </CardBody>
-          </Card>
-        )}
-        
-        {isAuthenticated && user && (
-          <Card className="rounded-xl border-2 border-green-300 shadow-lg bg-gradient-to-r from-green-50 via-emerald-50 to-cyan-50 mb-6">
-            <CardBody className="p-4">
-              <div className="flex items-center justify-end mb-3">
-                {/* HOME Button - Show when not on home dashboard */}
-                {!(currentPage === 'home' && !revision && !summary) && (
-                  <Button
-                    onClick={handleBackToHome}
-                    color="primary"
-                    size="md"
-                    className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all flex items-center gap-2"
-                  >
-                    <HomeIcon className="w-5 h-5" />
-                    Home
-                  </Button>
-                )}
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  {user.picture && !userImageError ? (
-                    <img 
-                      src={user.picture} 
-                      alt={user.name || user.email || 'User'} 
-                      className="w-10 h-10 rounded-full border-2 border-green-400 shadow-md"
-                      onError={() => setUserImageError(true)}
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full border-2 border-green-400 shadow-md bg-gradient-to-r from-green-400 to-emerald-400 flex items-center justify-center">
-                      <span className="text-white font-bold text-lg">
-                        {(user.name || user.email || 'U').charAt(0).toUpperCase()}
-                      </span>
-                    </div>
-                  )}
-                  <div>
-                    <p className="text-base text-green-800 font-medium">
-                      Signed in as <strong>{user.name || user.email}</strong> - Your work is being saved
-                    </p>
-                  </div>
-                </div>
-                <Button
-                  onClick={logout}
-                  color="secondary"
-                  variant="flat"
-                  size="md"
-                  className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700 rounded-lg font-semibold shadow-md transition-all"
-                >
-                  Sign Out
-                </Button>
-              </div>
-            </CardBody>
-          </Card>
-        )}
+      {/* Consistent Header Bar */}
+      <header className="sticky top-0 z-50 bg-white border-b-2 border-orange-200 shadow-sm">
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="flex items-center justify-between h-16">
+            {/* Logo (left) - acts as Home */}
+            <button
+              onClick={handleBackToHome}
+              className="flex items-center gap-3 hover:opacity-80 transition-opacity cursor-pointer"
+              aria-label="Home"
+            >
+              <Logo size="md" />
+              <span className="text-xl font-semibold text-orange-900 hidden sm:inline">My Revision Helper</span>
+            </button>
 
-      </div>
+            {/* Right side - Auth actions */}
+            <div className="flex items-center gap-3">
+              {isAuthenticated && user ? (
+                <>
+                  {/* User info - show on larger screens */}
+                  <div className="hidden md:flex items-center gap-2 text-sm text-gray-700">
+                    {user.picture && !userImageError ? (
+                      <img 
+                        src={user.picture} 
+                        alt={user.name || user.email || 'User'} 
+                        className="w-8 h-8 rounded-full border-2 border-orange-300"
+                        onError={() => setUserImageError(true)}
+                      />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full border-2 border-orange-300 bg-gradient-to-r from-orange-400 to-cyan-400 flex items-center justify-center">
+                        <span className="text-white font-bold text-sm">
+                          {(user.name || user.email || 'U').charAt(0).toUpperCase()}
+                        </span>
+                      </div>
+                    )}
+                    <span className="font-medium">{user.name || user.email}</span>
+                  </div>
+                  {/* Sign Out button - primary action */}
+                  <Button
+                    onClick={logout}
+                    size="sm"
+                    className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                  >
+                    Sign Out
+                  </Button>
+                </>
+              ) : (
+                import.meta.env.VITE_AUTH0_DOMAIN && (
+                  <Button
+                    onClick={login}
+                    size="sm"
+                    className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                  >
+                    Sign In
+                  </Button>
+                )
+              )}
+            </div>
+          </div>
+        </div>
+      </header>
 
-      <div className="max-w-6xl ml-8 mr-auto px-4 py-8">
+      {/* Session-only mode banner (only for unauthenticated users) */}
+      {!isAuthenticated && import.meta.env.VITE_AUTH0_DOMAIN && (
+        <div className="bg-yellow-50 border-b border-yellow-200">
+          <div className="max-w-6xl mx-auto px-4 py-2">
+            <div className="flex items-center gap-2 text-sm text-yellow-800">
+              <svg className="h-4 w-4 text-yellow-600 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              <span><strong>Session-only mode:</strong> Your work won't be saved. <button onClick={login} className="font-semibold underline hover:text-yellow-900 cursor-pointer">Sign in</button> to save your progress.</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="max-w-6xl mx-auto px-4 py-6">
 
       {/* Revision Lists View (Homepage) */}
       {currentPage === 'home' && showRevisionList && !revision && !summary && (
         <div className="space-y-6">
-          {/* Create New Revision Card */}
-          <Card className="rounded-xl border-2 border-orange-100 shadow-lg cursor-pointer hover:shadow-xl transition-all hover:border-orange-400" onClick={() => setCurrentPage('create')}>
-            <CardHeader className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-t-xl">
-              <div className="flex items-center gap-3">
-                <Logo size="md" />
-                <h2 className="text-2xl font-semibold text-orange-900">Create New Revision</h2>
-              </div>
-            </CardHeader>
-            <CardBody className="p-6">
-              <div className="flex items-center justify-between">
-                <p className="text-gray-700">
-                  Set up a new revision session with questions tailored to your study materials
-                </p>
+          {/* Revisions Section - Unified */}
+          <Card className="border border-gray-200 shadow-sm">
+            <CardHeader className="border-b border-gray-200 bg-white">
+              <div className="flex items-center justify-between w-full">
+                <h2 className="text-2xl font-semibold text-gray-900">Revisions</h2>
                 <Button
-                  color="primary"
-                  size="md"
-                  className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setCurrentPage('create')
-                  }}
+                  onClick={() => setCurrentPage('create')}
+                  size="sm"
+                  className={`bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all ${buttonWithIconClassName}`}
+                  startContent={<PlusIcon className="w-4 h-4" />}
                 >
-                  Create
+                  Create New
                 </Button>
               </div>
+            </CardHeader>
+            <CardBody className="p-4">
+              {knownRevisions.length > 0 ? (
+                <div className="space-y-2">
+                  {knownRevisions.map((r) => (
+                    <div key={r.id} className="border border-gray-200 rounded-lg p-4 bg-white">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <h3 className="font-semibold text-base text-gray-900">{r.name}</h3>
+                          <Chip size="sm" variant="flat" className="mt-1">
+                            {r.subject}
+                          </Chip>
+                          {r.uploadedFiles && r.uploadedFiles.length > 0 && (
+                            <div className="flex items-center gap-1 mt-2 text-sm text-gray-600">
+                              <PhotoIcon className="w-3 h-3" />
+                              <span>Files: {r.uploadedFiles.join(', ')}</span>
+                            </div>
+                          )}
+                          {r.extractedTextPreview && (
+                            <p className="text-sm text-gray-500 italic mt-2 line-clamp-2">
+                              "{r.extractedTextPreview}"
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+                          <Button
+                            onClick={() => r.id && handleLaunchRevision(r.id)}
+                            size="sm"
+                            className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all whitespace-nowrap"
+                            isDisabled={!r.id}
+                          >
+                            Start
+                          </Button>
+                          {isAuthenticated && r.id && (
+                          <Button
+                            onClick={() => r.id && handleDeleteRevision(r.id)}
+                            size="sm"
+                            variant="flat"
+                            className={`border border-red-300 text-red-700 bg-white hover:bg-red-50 rounded-lg font-semibold transition-all ${buttonWithIconClassName}`}
+                            startContent={<TrashIcon className="w-4 h-4" />}
+                          >
+                            Delete
+                          </Button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  <p className="mb-4">No revisions yet.</p>
+                  <Button
+                    onClick={() => setCurrentPage('create')}
+                    size="sm"
+                    className={`bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all ${buttonWithIconClassName}`}
+                    startContent={<PlusIcon className="w-4 h-4" />}
+                  >
+                    Create Your First Revision
+                  </Button>
+                </div>
+              )}
             </CardBody>
           </Card>
 
-          {/* Configured Revisions */}
-          {knownRevisions.length > 0 && (
-            <Card className="rounded-xl border-2 border-orange-100 shadow-lg">
-              <CardHeader className="bg-gradient-to-r from-orange-50 to-yellow-50 rounded-t-xl">
-                <div className="flex items-center gap-3">
-                  <Logo size="md" />
-                  <h2 className="text-2xl font-semibold text-orange-900">Configured Revisions</h2>
-                </div>
-              </CardHeader>
-              <CardBody>
-                <div className="space-y-3">
-                  {knownRevisions.map((r) => (
-                    <Card key={r.id} className="border-2 border-orange-200 hover:shadow-lg transition-all hover:border-orange-400 rounded-lg bg-gradient-to-r from-yellow-50 to-cyan-50">
-                      <CardBody>
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <h3 className="font-semibold text-lg text-gray-900">{r.name}</h3>
-                            <Chip size="sm" variant="flat" color="secondary" className="mt-1 rounded-full">
-                              {r.subject}
-                            </Chip>
-                            {r.uploadedFiles && r.uploadedFiles.length > 0 && (
-                              <div className="flex items-center gap-1 mt-2 text-sm text-gray-600">
-                                <PhotoIcon className="w-3 h-3 text-cyan-600" />
-                                <span>Files: {r.uploadedFiles.join(', ')}</span>
-                              </div>
-                            )}
-                            {r.extractedTextPreview && (
-                              <p className="text-sm text-gray-500 italic mt-2 line-clamp-2">
-                                "{r.extractedTextPreview}"
-                              </p>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 ml-4">
-                            <Button
-                              onClick={() => r.id && handleLaunchRevision(r.id)}
-                              color="primary"
-                              size="md"
-                              className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
-                              isDisabled={!r.id}
-                            >
-                              Start
-                            </Button>
-                            {isAuthenticated && r.id && (
-                              <Button
-                                onClick={() => r.id && handleDeleteRevision(r.id)}
-                                color="danger"
-                                size="md"
-                                variant="flat"
-                                className="bg-gradient-to-r from-red-50 to-rose-50 hover:from-red-100 hover:to-rose-100 border-2 border-red-300 text-red-700 rounded-lg font-semibold shadow-md transition-all"
-                              >
-                                Delete
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      </CardBody>
-                    </Card>
-                  ))}
-                </div>
-              </CardBody>
-            </Card>
-          )}
-
           {/* Completed Revisions - Only show for authenticated users */}
           {isAuthenticated && completedRuns.length > 0 && (
-            <Card className="rounded-xl border-2 border-green-100 shadow-lg">
-              <CardHeader className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-t-xl">
-                <div className="flex items-center gap-3">
-                  <CheckCircleIcon className="w-6 h-6 text-green-600" />
-                  <h2 className="text-2xl font-semibold text-green-900">Completed Revisions</h2>
+            <Card className="border border-gray-200 shadow-sm">
+              <CardHeader className="border-b border-gray-200 bg-white">
+                <div className="flex items-center gap-2">
+                  <CheckCircleIcon className="w-5 h-5 text-gray-600" />
+                  <h2 className="text-2xl font-semibold text-gray-900">Completed Revisions</h2>
                 </div>
               </CardHeader>
-              <CardBody>
-                <div className="space-y-3">
+              <CardBody className="p-4">
+                <div className="space-y-2">
                   {completedRuns.map((completed) => {
-                    // Color coding based on score relative to threshold
-                    // Green: score > threshold
-                    // Red: score <= threshold - 20
-                    // Orange: threshold - 20 < score <= threshold
-                    const getColorClasses = () => {
+                    // Determine status color (simplified - just for border)
+                    const getStatusColor = () => {
                       if (completed.score > completed.threshold) {
-                        // Green - above threshold
-                        return {
-                          border: "border-green-400",
-                          hoverBorder: "hover:border-green-500",
-                          gradient: "bg-gradient-to-r from-green-50 to-emerald-50",
-                          buttonGradient: "bg-gradient-to-r from-green-600 to-emerald-600",
-                          buttonHover: "hover:from-green-700 hover:to-emerald-700",
-                        }
+                        return "border-l-4 border-l-green-500"
                       } else if (completed.score <= completed.threshold - 20) {
-                        // Red - threshold - 20 or less
-                        return {
-                          border: "border-red-400",
-                          hoverBorder: "hover:border-red-500",
-                          gradient: "bg-gradient-to-r from-red-50 to-rose-50",
-                          buttonGradient: "bg-gradient-to-r from-red-600 to-rose-600",
-                          buttonHover: "hover:from-red-700 hover:to-rose-700",
-                        }
+                        return "border-l-4 border-l-red-500"
                       } else {
-                        // Orange - between threshold - 20 and threshold
-                        return {
-                          border: "border-orange-400",
-                          hoverBorder: "hover:border-orange-500",
-                          gradient: "bg-gradient-to-r from-orange-50 to-amber-50",
-                          buttonGradient: "bg-gradient-to-r from-orange-600 to-amber-600",
-                          buttonHover: "hover:from-orange-700 hover:to-amber-700",
-                        }
+                        return "border-l-4 border-l-orange-500"
                       }
                     }
-                    const colors = getColorClasses()
                     
                     return (
-                      <Card key={completed.runId} className={`border-2 ${colors.border} ${colors.hoverBorder} hover:shadow-lg transition-all rounded-lg ${colors.gradient}`}>
-                        <CardBody>
-                          <div className="flex items-start justify-between">
-                            <div className="flex-1">
-                              <h3 className="font-semibold text-lg text-gray-900">{completed.revisionName}</h3>
-                              <Chip size="sm" variant="flat" color="secondary" className="mt-1 rounded-full">
-                                {completed.subject}
-                              </Chip>
-                              <div className="mt-2 flex items-center gap-4 text-sm">
-                                <span className="text-gray-700">
-                                  <strong>Score:</strong> {completed.score.toFixed(1)}%
-                                </span>
-                                <span className="text-gray-600">
-                                  <strong>Threshold:</strong> {completed.threshold}%
-                                </span>
-                                <span className="text-gray-600">
-                                  <strong>Questions:</strong> {completed.totalQuestions}
-                                </span>
-                                <span className="text-gray-500 text-xs">
-                                  {new Date(completed.completedAt).toLocaleDateString()}
-                                </span>
-                              </div>
+                      <div key={completed.runId} className={`border border-gray-200 rounded-lg p-4 bg-white ${getStatusColor()}`}>
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <h3 className="font-semibold text-base text-gray-900">{completed.revisionName}</h3>
+                            <Chip size="sm" variant="flat" className="mt-1">
+                              {completed.subject}
+                            </Chip>
+                            <div className="mt-2 flex items-center gap-4 text-sm text-gray-600">
+                              <span><strong>Score:</strong> {completed.score.toFixed(1)}%</span>
+                              <span><strong>Threshold:</strong> {completed.threshold}%</span>
+                              <span><strong>Questions:</strong> {completed.totalQuestions}</span>
+                              <span className="text-gray-500 text-xs">
+                                {new Date(completed.completedAt).toLocaleDateString()}
+                              </span>
                             </div>
-                            <Button
-                              onClick={() => handleViewSummary(completed.runId)}
-                              color="success"
-                              size="md"
-                              className={`ml-4 ${colors.buttonGradient} ${colors.buttonHover} text-white rounded-lg font-semibold shadow-md transition-all`}
-                            >
-                              View Summary
-                            </Button>
                           </div>
-                        </CardBody>
-                      </Card>
+                          <Button
+                            onClick={() => handleViewSummary(completed.runId)}
+                            size="sm"
+                            className="ml-4 bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                          >
+                            View Summary
+                          </Button>
+                        </div>
+                      </div>
                     )
                   })}
                 </div>
-              </CardBody>
-            </Card>
-          )}
-
-          {/* Show message if no revisions */}
-          {knownRevisions.length === 0 && completedRuns.length === 0 && (
-            <Card className="rounded-xl border-2 border-gray-200 shadow-lg bg-white">
-              <CardBody className="text-center py-8">
-                <Logo size="xl" className="mx-auto mb-4 opacity-50" />
-                <p className="text-gray-600">No revisions yet. Click the button above to create one!</p>
               </CardBody>
             </Card>
           )}
@@ -924,73 +901,85 @@ function App() {
       {currentPage === 'create' && !revision && !summary && (
         <div className="mb-6">
           <div className="mb-4">
-            <Button
-              onClick={() => setCurrentPage('home')}
-              color="secondary"
-              variant="flat"
-              className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700 rounded-lg font-semibold shadow-md transition-all"
-            >
-              ← Back to Home
-            </Button>
+            <h2 className="text-2xl font-semibold text-gray-900 mb-1">Create New Revision</h2>
+            <p className="text-sm text-gray-600">
+              Set up a revision session with questions tailored to your study materials
+            </p>
           </div>
-          <Card className="rounded-xl border-2 border-orange-100 shadow-lg bg-white mb-4">
+          <Card className="border border-gray-200 shadow-sm bg-white">
             <CardBody className="p-6">
-              <div className="flex items-start gap-3">
-                <Logo size="lg" className="flex-shrink-0" />
+              <form onSubmit={handleCreateRevision} className="space-y-4 w-full">
+                <Input
+                  label="Revision Name"
+                  placeholder="e.g., Math Test Prep"
+                  value={form.name}
+                  onChange={(e) => {
+                    onChangeForm('name', e.target.value)
+                    if (formErrors.name) setFormErrors({...formErrors, name: undefined})
+                  }}
+                  required
+                  variant="bordered"
+                  isInvalid={!!formErrors.name}
+                  errorMessage={formErrors.name}
+                  classNames={{
+                    ...inputClassNames,
+                    inputWrapper: formErrors.name 
+                      ? "rounded-lg border-2 border-red-400 hover:border-red-500" 
+                      : inputClassNames.inputWrapper,
+                  }}
+                />
+                <Select
+                  label="Subject"
+                  placeholder="Select a subject"
+                  selectedKeys={form.subject ? [form.subject] : []}
+                  onSelectionChange={(keys) => {
+                    const selected = Array.from(keys)[0] as string
+                    onChangeForm('subject', selected || '')
+                    if (formErrors.subject) setFormErrors({...formErrors, subject: undefined})
+                  }}
+                  required
+                  variant="bordered"
+                  isInvalid={!!formErrors.subject}
+                  errorMessage={formErrors.subject}
+                  classNames={{
+                    ...selectClassNames,
+                    trigger: formErrors.subject
+                      ? "rounded-lg border-2 border-red-400 hover:border-red-500 px-3 min-h-unit-12"
+                      : selectClassNames.trigger,
+                  }}
+                >
+                  {subjects.map((subject) => (
+                    <SelectItem 
+                      key={subject}
+                      classNames={{
+                        base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
+                      }}
+                    >
+                      {subject}
+                    </SelectItem>
+                  ))}
+                </Select>
+                <Textarea
+                  label="Description"
+                  placeholder="Describe what to study, or upload images with text below"
+                  value={form.description}
+                  onChange={(e) => {
+                    onChangeForm('description', e.target.value)
+                    if (formErrors.description) setFormErrors({...formErrors, description: undefined})
+                  }}
+                  variant="bordered"
+                  minRows={3}
+                  isInvalid={!!formErrors.description}
+                  errorMessage={formErrors.description}
+                  classNames={{
+                    ...inputClassNames,
+                    inputWrapper: formErrors.description
+                      ? "rounded-lg border-2 border-red-400 hover:border-red-500"
+                      : inputClassNames.inputWrapper,
+                  }}
+                />
+                
                 <div>
-                  <h2 className="text-2xl font-semibold text-orange-900 mb-2">Set Up a Revision</h2>
-                  <p className="text-sm text-gray-700">
-                    Create a new revision session with questions tailored to your study materials
-                  </p>
-                </div>
-              </div>
-            </CardBody>
-          </Card>
-          <div className="rounded-xl border-2 border-orange-100 shadow-lg bg-white p-6">
-            <form onSubmit={handleCreateRevision} className="space-y-4 w-full">
-              <Input
-                label="Revision Name"
-                placeholder="e.g., Math Test Prep"
-                value={form.name}
-                onChange={(e) => onChangeForm('name', e.target.value)}
-                required
-                variant="bordered"
-                classNames={inputClassNames}
-              />
-              <Select
-                label="Subject"
-                placeholder="Select a subject"
-                selectedKeys={form.subject ? [form.subject] : []}
-                onSelectionChange={(keys) => {
-                  const selected = Array.from(keys)[0] as string
-                  onChangeForm('subject', selected || '')
-                }}
-                required
-                variant="bordered"
-                classNames={selectClassNames}
-              >
-                {subjects.map((subject) => (
-                  <SelectItem 
-                    key={subject}
-                    classNames={{
-                      base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
-                    }}
-                  >
-                    {subject}
-                  </SelectItem>
-                ))}
-              </Select>
-              <Textarea
-                label="Description"
-                placeholder="Describe what to study, or upload images with text below"
-                value={form.description}
-                onChange={(e) => onChangeForm('description', e.target.value)}
-                variant="bordered"
-                minRows={3}
-                classNames={inputClassNames}
-              />
-              
-      <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   <PhotoIcon className="w-3.5 h-3.5 inline mr-1 text-orange-600" />
                   Upload Files - Images, PDFs, PowerPoint (multiple files supported, text will be extracted automatically)
@@ -1031,13 +1020,13 @@ function App() {
                 {selectedFiles.length > 0 && (
                   <div className="mt-3 p-3 bg-gradient-to-r from-cyan-50 to-orange-50 rounded-lg border-2 border-cyan-200">
                     <div className="flex items-center justify-between mb-2">
-                      <p className="text-sm text-green-800 font-semibold">
+                      <p className="text-sm text-gray-700 font-semibold">
                         {selectedFiles.length} file{selectedFiles.length !== 1 ? 's' : ''} selected
                       </p>
                       <button
                         type="button"
                         onClick={() => setSelectedFiles([])}
-                        className="text-xs text-green-700 hover:text-green-900 underline rounded-lg px-2 py-1 transition-all"
+                        className="text-xs text-gray-600 hover:text-gray-800 underline rounded-lg px-2 py-1 transition-all cursor-pointer"
                       >
                         Clear all
                       </button>
@@ -1053,10 +1042,10 @@ function App() {
                         let iconColor = "text-cyan-600"
                         if (isImage) {
                           FileIcon = PhotoIcon
-                          iconColor = "text-green-600"
+                          iconColor = "text-cyan-600"
                         } else if (isPDF) {
                           FileIcon = DocumentIcon
-                          iconColor = "text-red-600"
+                          iconColor = "text-gray-600"
                         } else if (isPPT) {
                           FileIcon = PresentationChartBarIcon
                           iconColor = "text-orange-600"
@@ -1065,7 +1054,7 @@ function App() {
                         return (
                           <div
                             key={`${file.name}-${index}`}
-                            className="flex items-center justify-between p-2 bg-white rounded border border-green-200"
+                            className="flex items-center justify-between p-2 bg-white rounded border border-gray-200"
                           >
                             <div className="flex items-center gap-2 flex-1 min-w-0">
                               <FileIcon className={`w-4 h-4 ${iconColor} flex-shrink-0`} />
@@ -1081,7 +1070,7 @@ function App() {
                               onClick={() => {
                                 setSelectedFiles((prev) => prev.filter((_, i) => i !== index))
                               }}
-                              className="ml-2 p-1 hover:bg-red-50 rounded-lg text-red-600 hover:text-red-800 flex-shrink-0 transition-all"
+                              className="ml-2 p-1 hover:bg-red-50 rounded-lg text-red-600 hover:text-red-800 flex-shrink-0 transition-all cursor-pointer"
                               title="Remove file"
                             >
                               <XMarkIcon className="w-4 h-4" />
@@ -1126,15 +1115,15 @@ function App() {
               </div>
 
               {error && (
-                <div className="p-3 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-lg">
+                <div className="mb-4 p-3 bg-red-50 border border-red-300 rounded">
                   <p className="text-sm text-red-800 font-medium">{error}</p>
-      </div>
+                </div>
               )}
 
               <button
                 type="submit"
                 disabled={isCreating || isProcessingFiles}
-                className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 shadow-lg text-white py-3 px-4 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white shadow-md py-3 px-4 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
               >
                 {isProcessingFiles
                   ? 'Processing images and creating...'
@@ -1142,170 +1131,185 @@ function App() {
                   ? 'Creating...'
                   : 'Create Revision'}
         </button>
-            </form>
-          </div>
+              </form>
+            </CardBody>
+          </Card>
         </div>
       )}
 
       {revision && (
         <div className="mb-6">
-          
-          <div className="rounded-xl border-2 border-orange-100 shadow-lg bg-white p-6">
-          <div className="mb-4">
-            <h2 className="text-2xl font-semibold text-orange-900 mb-2">Let's Revise!</h2>
-            <p className="text-sm text-gray-700">
-              <strong className="text-orange-800">{revision.name}</strong> • <span className="text-cyan-700">{revision.subject}</span>
-            </p>
-          </div>
-            {error && (
-              <div className="p-3 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-300 rounded-lg mb-4">
-                <p className="text-sm text-red-800 font-medium">{error}</p>
-              </div>
-            )}
+          {error && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-300 rounded">
+              <p className="text-sm text-red-800 font-medium">{error}</p>
+            </div>
+          )}
 
-            {!summary && (
-              <>
-                {/* Progress Tracker */}
-                {totalQuestions > 0 && (
-                  <div className="mb-4 p-3 bg-gradient-to-r from-orange-50 to-yellow-50 border-2 border-orange-200 rounded-lg">
-                    <p className="text-center text-lg font-semibold text-orange-700">
-                      Question {currentQuestionNumber} of {totalQuestions}
-                    </p>
-                    <div className="mt-2 w-full bg-gradient-to-r from-blue-200 via-cyan-200 to-blue-300 rounded-full h-2.5 shadow-inner">
-                      <div 
-                        className="bg-gradient-to-r from-orange-500 via-orange-600 to-red-600 h-2.5 rounded-full transition-all duration-300 shadow-sm"
-                        style={{ width: `${(currentQuestionNumber / totalQuestions) * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                )}
-
-                {question ? (
-                  <div className="space-y-4">
-                    {question.text.startsWith('ERROR:') ? (
-                      <Card className="bg-gradient-to-r from-orange-50 to-amber-50 border-2 border-orange-300 rounded-xl shadow-md">
-                        <CardBody>
-                          <div className="flex items-center gap-2 mb-2">
-                            <XCircleIcon className="w-5 h-5 text-orange-600" />
-                            <h3 className="text-lg font-semibold text-orange-900">Error Generating Questions</h3>
+          {!summary && (
+            <>
+              {question ? (
+                <div className="space-y-4">
+                  {question.text.startsWith('ERROR:') ? (
+                    <Card className="border border-orange-300 shadow-sm bg-white">
+                      <CardBody className="p-4">
+                        <div className="flex items-center gap-2 mb-2">
+                          <XCircleIcon className="w-5 h-5 text-orange-600" />
+                          <h3 className="text-lg font-semibold text-orange-900">Error Generating Questions</h3>
+                        </div>
+                        <p className="text-orange-800 text-base">{question.text.replace('ERROR: ', '')}</p>
+                      </CardBody>
+                    </Card>
+                  ) : (
+                    <Card className="border border-gray-200 shadow-sm bg-white">
+                      <CardBody className="p-4">
+                        {/* Compact stepper at top */}
+                        {totalQuestions > 0 && (
+                          <div className="mb-3 pb-3 border-b border-gray-200">
+                            <div className="flex items-center justify-between">
+                              <span className="text-sm font-medium text-gray-700">
+                                Question {currentQuestionNumber} of {totalQuestions}
+                              </span>
+                              <span className="text-xs text-gray-500">
+                                {revision.name} • {revision.subject}
+                              </span>
+                            </div>
+                            <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                              <div 
+                                className="bg-orange-500 h-1.5 rounded-full transition-all duration-300"
+                                style={{ width: `${(currentQuestionNumber / totalQuestions) * 100}%` }}
+                              ></div>
+                            </div>
                           </div>
-                          <p className="text-orange-800 text-base">{question.text.replace('ERROR: ', '')}</p>
-                        </CardBody>
-                      </Card>
-                    ) : (
-                      <Card className="bg-gradient-to-r from-cyan-50 to-orange-50 border-2 border-orange-300 rounded-xl shadow-md">
-                        <CardBody>
-                          <h3 className="text-lg font-semibold mb-2 text-orange-900">
-                            Question {totalQuestions > 0 ? `${currentQuestionNumber} of ${totalQuestions}` : ''}
-                          </h3>
-                          <p className="text-gray-700 text-lg">{question.text}</p>
-                        </CardBody>
-                      </Card>
+                        )}
+                        <h3 className="text-2xl font-semibold text-gray-900 mb-3">Question</h3>
+                        <p className="text-gray-800 text-base leading-relaxed">{question.text}</p>
+                      </CardBody>
+                    </Card>
+                  )}
+
+                    {/* Answer section - shown when no result yet */}
+                    {!lastResult && (
+                      <div className="space-y-4">
+                        <Textarea
+                          label="Your Answer"
+                          placeholder="Type your answer here... (Press Enter to submit, Shift+Enter for new line)"
+                          value={answer}
+                          onChange={(e) => {
+                            setAnswer(e.target.value)
+                            if (answerError) setAnswerError(null)
+                          }}
+                          onKeyDown={(e) => {
+                            // Submit on Enter (but not Shift+Enter, which creates a new line)
+                            if (e.key === 'Enter' && !e.shiftKey && answer.trim() && !isSubmittingAnswer) {
+                              e.preventDefault()
+                              handleSubmitAnswer()
+                            }
+                          }}
+                          variant="bordered"
+                          minRows={4}
+                          isInvalid={!!answerError}
+                          errorMessage={answerError}
+                          classNames={{
+                            ...inputClassNames,
+                            inputWrapper: answerError
+                              ? "rounded-lg border-2 border-red-400 hover:border-red-500"
+                              : inputClassNames.inputWrapper,
+                          }}
+                        />
+
+                        <Button
+                          onClick={handleSubmitAnswer}
+                          color="primary"
+                          size="lg"
+                          className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white shadow-md transition-all"
+                          isLoading={isSubmittingAnswer}
+                          disabled={isSubmittingAnswer || !answer.trim()}
+                        >
+                          {isSubmittingAnswer ? 'Evaluating...' : 'Submit Answer'}
+                        </Button>
+                      </div>
                     )}
 
-                    <Textarea
-                      label="Your Answer"
-                      placeholder="Type your answer here... (Press Enter to submit, Shift+Enter for new line)"
-                      value={answer}
-                      onChange={(e) => setAnswer(e.target.value)}
-                      onKeyDown={(e) => {
-                        // Submit on Enter (but not Shift+Enter, which creates a new line)
-                        if (e.key === 'Enter' && !e.shiftKey && answer.trim() && !isSubmittingAnswer) {
-                          e.preventDefault()
-                          handleSubmitAnswer()
-                        }
-                      }}
-                      variant="bordered"
-                      minRows={4}
-                      classNames={inputClassNames}
-                    />
-
-                    <Button
-                      onClick={handleSubmitAnswer}
-                      color="primary"
-                      size="lg"
-                      className="w-full rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white shadow-lg transition-all"
-                      isLoading={isSubmittingAnswer}
-                      disabled={isSubmittingAnswer || !answer.trim()}
-                    >
-                      {isSubmittingAnswer ? 'Checking...' : 'Submit Answer'}
-                    </Button>
-
+                    {/* Feedback section - replaces answer section when result exists */}
                     {lastResult && (
-                      <Card className={`border-2 rounded-xl shadow-md ${
+                      <Card className={`border shadow-sm ${
                         lastResult.error 
-                          ? 'border-orange-400 bg-gradient-to-r from-orange-50 to-amber-50' 
+                          ? 'border-orange-300 bg-orange-50' 
                           : lastResult.score === 'Full Marks'
-                          ? 'border-cyan-400 bg-gradient-to-r from-cyan-50 to-orange-50'
+                          ? 'border-green-300 bg-green-50'
                           : lastResult.score === 'Partial Marks'
-                          ? 'border-yellow-400 bg-gradient-to-r from-yellow-50 to-amber-50'
-                          : 'border-red-400 bg-gradient-to-r from-red-50 to-rose-50'
+                          ? 'border-yellow-300 bg-yellow-50'
+                          : 'border-red-300 bg-red-50'
                       }`}>
-                        <CardBody>
+                        <CardBody className="p-4">
                           {lastResult.error ? (
                             <div className="space-y-2">
-                              <div className="flex items-center gap-2 mb-3">
+                              <div className="flex items-center gap-2">
                                 <XCircleIcon className="w-5 h-5 text-orange-600" />
                                 <h4 className="text-lg font-semibold text-orange-800">
                                   Error Marking Answer
                                 </h4>
                               </div>
-                              <div className="mt-3 p-3 bg-white rounded-lg border-2 border-orange-200">
-                                <p className="text-sm text-orange-800 font-medium">
-                                  {lastResult.error}
-                                </p>
-                              </div>
+                              <p className="text-sm text-orange-800">
+                                {lastResult.error}
+                              </p>
                             </div>
                           ) : (
-                            <>
-                              <div className="flex items-center gap-2 mb-3">
+                            <div className="space-y-3">
+                              <div className="flex items-center gap-3">
                                 {lastResult.score === 'Full Marks' ? (
-                                  <CheckCircleIcon className="w-4 h-4 text-green-600" />
+                                  <div className="flex items-center gap-2">
+                                    <CheckCircleIcon className="w-6 h-6 text-green-600" />
+                                    <h4 className="text-lg font-semibold text-green-800">
+                                      Correct
+                                    </h4>
+                                  </div>
                                 ) : lastResult.score === 'Partial Marks' ? (
-                                  <CheckCircleIcon className="w-4 h-4 text-yellow-600" />
+                                  <div className="flex items-center gap-2">
+                                    <ExclamationTriangleIcon className="w-6 h-6 text-yellow-600" />
+                                    <h4 className="text-lg font-semibold text-yellow-800">
+                                      Partial Credit
+                                    </h4>
+                                  </div>
                                 ) : (
-                                  <XCircleIcon className="w-4 h-4 text-red-600" />
+                                  <div className="flex items-center gap-2">
+                                    <XCircleIcon className="w-6 h-6 text-red-600" />
+                                    <h4 className="text-lg font-semibold text-red-800">
+                                      Incorrect
+                                    </h4>
+                                  </div>
                                 )}
-                                <h4 className={`text-lg font-semibold ${
-                                  lastResult.score === 'Full Marks' 
-                                    ? 'text-green-800' 
-                                    : lastResult.score === 'Partial Marks'
-                                    ? 'text-yellow-800'
-                                    : 'text-red-800'
-                                }`}>
-                                  {lastResult.score || (lastResult.isCorrect ? 'Correct!' : 'Incorrect')}
-                                </h4>
                               </div>
                               <div className="space-y-2">
-                                <p className="text-gray-700">
+                                <p className="text-sm text-gray-700">
                                   <span className="font-medium">Correct answer:</span>{' '}
                                   <span className="font-semibold text-gray-900">{lastResult.correctAnswer}</span>
                                 </p>
                                 {lastResult.explanation && (
-                                  <div className="mt-3 p-3 bg-white rounded-lg border-2 border-gray-200">
+                                  <div className="p-3 bg-white rounded border border-gray-200">
                                     <p className="text-sm text-gray-700">
                                       <span className="font-medium">Explanation:</span> {lastResult.explanation}
-        </p>
-      </div>
+                                    </p>
+                                  </div>
                                 )}
                               </div>
-                            </>
+                            </div>
                           )}
-                          <div className="flex gap-2 mt-4">
+                          <div className="flex gap-2 mt-4 pt-4 border-t border-gray-200">
                             <Button
                               onClick={handleFinishEarly}
                               color="secondary"
                               variant="flat"
-                              className="flex-1 rounded-lg font-semibold bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700 shadow-md transition-all"
+                              className="flex-1 rounded-lg font-semibold border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 transition-all"
                             >
                               Finish Now
                             </Button>
                             <Button
                               onClick={handleNextQuestion}
                               color="primary"
-                              variant="flat"
-                              className="flex-1 rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white border-2 border-orange-500 shadow-md transition-all"
+                              className={`flex-1 rounded-lg font-semibold bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white shadow-md transition-all ${buttonWithIconClassName}`}
                               isLoading={isLoadingQuestion}
+                              endContent={!isLoadingQuestion && <ArrowRightIcon className="w-4 h-4" />}
                             >
                               Next Question
                             </Button>
@@ -1316,7 +1320,7 @@ function App() {
                   </div>
                 ) : totalQuestions > 0 ? (
                   // Animation screen when all questions are completed
-                  <Card className="bg-gradient-to-r from-orange-50 to-yellow-50 border-2 border-orange-200 rounded-xl">
+                  <Card className="bg-gradient-to-r from-orange-50 to-yellow-50 border-2 border-orange-200 rounded-lg">
                     <CardBody className="flex flex-col items-center justify-center py-12">
                       <Logo size="xl" className="mb-4 animate-bounce" />
                       <div className="text-6xl mb-4 animate-bounce">🎉</div>
@@ -1333,7 +1337,7 @@ function App() {
                   </Card>
                 ) : (
                   // Loading screen before test starts
-                  <Card className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-orange-200 rounded-xl">
+                  <Card className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-orange-200 rounded-lg">
                     <CardBody className="flex flex-col items-center justify-center py-12">
                       <Logo size="xl" className="mb-4 animate-pulse" />
                       <div className="text-6xl mb-4 animate-spin">⏳</div>
@@ -1354,17 +1358,7 @@ function App() {
 
             {summary && isAuthenticated && (
               <div className="space-y-4">
-                <div className="flex items-center justify-between mb-4">
-                  <Button
-                    onClick={handleBackToHome}
-                    color="secondary"
-                    variant="flat"
-                    className="bg-gradient-to-r from-gray-50 to-slate-50 hover:from-gray-100 hover:to-slate-100 border-2 border-gray-300 text-gray-700 rounded-lg font-semibold shadow-md transition-all"
-                  >
-                    ← Back to Revisions
-                  </Button>
-                </div>
-                <Card className="bg-gradient-to-r from-orange-500 via-red-600 to-orange-600 text-white rounded-xl shadow-xl border-2 border-orange-300">
+                <Card className="bg-gradient-to-r from-orange-500 via-red-600 to-orange-600 text-white rounded-lg shadow-md border-2 border-orange-300">
                   <CardBody>
                     <div className="mb-2">
                       <h3 className="text-2xl font-bold">Summary</h3>
@@ -1375,9 +1369,16 @@ function App() {
                   </CardBody>
                 </Card>
 
-                <Table aria-label="Answer summary">
+                <Table 
+                  aria-label="Answer summary"
+                  classNames={{
+                    wrapper: "border border-gray-200 rounded-lg shadow-sm",
+                    th: "bg-gray-50 text-gray-700 font-semibold border-b border-gray-200",
+                    td: "border-b border-gray-100",
+                  }}
+                >
                   <TableHeader>
-                    <TableColumn>#</TableColumn>
+                    <TableColumn className="text-right">#</TableColumn>
                     <TableColumn>Question</TableColumn>
                     <TableColumn>Your Answer</TableColumn>
                     <TableColumn>Correct Answer</TableColumn>
@@ -1385,24 +1386,17 @@ function App() {
                   </TableHeader>
                   <TableBody>
                     {summary.questions.map((q, idx) => {
-                      const rowColorClass = q.score === 'Full Marks' 
-                        ? 'bg-gradient-to-r from-green-50 via-emerald-50 to-green-100 hover:from-green-100 hover:via-emerald-100 hover:to-green-200' 
+                      const rowBgColor = q.score === 'Full Marks' 
+                        ? 'bg-green-50' 
                         : q.score === 'Partial Marks'
-                        ? 'bg-gradient-to-r from-yellow-50 via-amber-50 to-yellow-100 hover:from-yellow-100 hover:via-amber-100 hover:to-yellow-200'
-                        : 'bg-gradient-to-r from-red-50 via-rose-50 to-red-100 hover:from-red-100 hover:via-rose-100 hover:to-red-200'
+                        ? 'bg-yellow-50'
+                        : 'bg-red-50'
                       return (
                         <TableRow 
                           key={q.questionId} 
-                          className={rowColorClass}
-                          style={{
-                            backgroundColor: q.score === 'Full Marks' 
-                              ? '#f0fdf4' 
-                              : q.score === 'Partial Marks'
-                              ? '#fefce8'
-                              : '#fef2f2'
-                          }}
+                          className={rowBgColor}
                         >
-                          <TableCell>{idx + 1}</TableCell>
+                          <TableCell className="text-right font-medium">{idx + 1}</TableCell>
                           <TableCell className="font-medium">{q.questionText || 'Question not available'}</TableCell>
                           <TableCell>{q.studentAnswer}</TableCell>
                           <TableCell className="font-semibold">{q.correctAnswer}</TableCell>
@@ -1429,9 +1423,59 @@ function App() {
               </div>
             )}
           </div>
-        </div>
       )}
       </div>
+
+      {/* Confirmation Modal for Delete */}
+      <Modal
+        isOpen={deleteConfirm.isOpen}
+        onClose={() => setDeleteConfirm({isOpen: false, revisionId: null})}
+        placement="center"
+        classNames={{
+          base: "border-2 border-orange-200 bg-white",
+          backdrop: "bg-black/50 backdrop-opacity-40",
+          header: "border-b border-orange-200",
+          body: "py-6",
+          footer: "border-t border-orange-200",
+          closeButton: "hover:bg-orange-50 active:bg-orange-100",
+        }}
+      >
+        <ModalContent>
+          {(onClose) => (
+            <>
+              <ModalHeader className="flex flex-col gap-1">
+                <div className="flex items-center gap-2">
+                  <ExclamationTriangleIcon className="w-6 h-6 text-orange-600" />
+                  <h3 className="text-xl font-semibold text-gray-900">Confirm Deletion</h3>
+                </div>
+              </ModalHeader>
+              <ModalBody>
+                <p className="text-gray-700">
+                  Are you sure you want to delete this revision? This action cannot be undone.
+                </p>
+              </ModalBody>
+              <ModalFooter>
+                <Button
+                  variant="flat"
+                  onPress={onClose}
+                  className="border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onPress={() => {
+                    confirmDeleteRevision()
+                    onClose()
+                  }}
+                  className="bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                >
+                  Delete
+                </Button>
+              </ModalFooter>
+            </>
+          )}
+        </ModalContent>
+      </Modal>
     </div>
   )
 }
