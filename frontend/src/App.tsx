@@ -40,6 +40,7 @@ type RevisionConfig = {
   description?: string
   desiredQuestionCount: number
   accuracyThreshold: number
+  questionStyle?: 'free-text' | 'multiple-choice'
   uploadedFiles?: string[] | null
   extractedTextPreview?: string | null
 }
@@ -47,6 +48,10 @@ type RevisionConfig = {
 type Question = {
   id: string
   text: string
+  questionStyle?: 'free-text' | 'multiple-choice'
+  options?: string[]  // For multiple choice questions
+  correctAnswerIndex?: number  // For multiple choice questions (0-based index)
+  rationale?: string  // Prefetched explanation for multiple choice questions
 }
 
 type AnswerResult = {
@@ -100,6 +105,7 @@ async function createRevision(
   formData.append('desiredQuestionCount', String(config.desiredQuestionCount))
   formData.append('accuracyThreshold', String(config.accuracyThreshold))
   formData.append('topics', JSON.stringify(config.topics))
+  formData.append('questionStyle', config.questionStyle || 'free-text')
   
   // Add files if provided
   if (files && files.length > 0) {
@@ -178,7 +184,26 @@ async function getNextQuestion(runId: string, token?: string | null): Promise<Qu
   const res = await fetch(`${API_BASE}/runs/${runId}/next-question`, { headers })
   if (!res.ok) throw new Error('Failed to load question')
   const data = await res.json()
-  return data ? { id: data.id, text: data.text } : null
+  if (!data) return null
+  
+  // Return full question data including multiple choice fields
+  const question: Question = {
+    id: data.id,
+    text: data.text,
+  }
+  if (data.questionStyle) {
+    question.questionStyle = data.questionStyle
+  }
+  if (data.options) {
+    question.options = data.options
+  }
+  if (data.correctAnswerIndex !== undefined && data.correctAnswerIndex !== null) {
+    question.correctAnswerIndex = data.correctAnswerIndex
+  }
+  if (data.rationale) {
+    question.rationale = data.rationale
+  }
+  return question
 }
 
 async function getQuestionCount(runId: string, token?: string | null): Promise<number> {
@@ -283,6 +308,7 @@ function App() {
     description: '',
     desiredQuestionCount: 10,
     accuracyThreshold: 80,
+    questionStyle: 'free-text' as 'free-text' | 'multiple-choice',
   })
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [isCreating, setIsCreating] = useState(false)
@@ -323,6 +349,7 @@ function App() {
   const [currentQuestionNumber, setCurrentQuestionNumber] = useState<number>(0)
   const [lastAnsweredQuestionId, setLastAnsweredQuestionId] = useState<string | null>(null)
   const [isLoadingQuestion, setIsLoadingQuestion] = useState(false)
+  const [isStartingRun, setIsStartingRun] = useState(false)
   const [userImageError, setUserImageError] = useState(false)
   const [formErrors, setFormErrors] = useState<{name?: string; subject?: string; description?: string}>({})
   const [answerError, setAnswerError] = useState<string | null>(null)
@@ -405,7 +432,7 @@ function App() {
     }
   }
 
-  const onChangeForm = (field: keyof typeof form, value: string | number) => {
+  const onChangeForm = (field: keyof typeof form, value: string | number | 'free-text' | 'multiple-choice') => {
     setForm((prev) => ({ ...prev, [field]: value }))
   }
 
@@ -443,6 +470,7 @@ function App() {
           description: form.description,
           desiredQuestionCount: form.desiredQuestionCount,
           accuracyThreshold: form.accuracyThreshold,
+          questionStyle: form.questionStyle,
         },
         selectedFiles.length > 0 ? selectedFiles : undefined,
         token
@@ -451,25 +479,30 @@ function App() {
 
       // Start a run for this revision and load the first question
       if (created.id) {
-        const newRun = await startRun(created.id, token)
-        setRun(newRun)
-        setShowRevisionList(false)
+        setIsStartingRun(true)
+        try {
+          const newRun = await startRun(created.id, token)
+          setRun(newRun)
+          setShowRevisionList(false)
 
-        // Get total question count and set initial question number
-        const total = await getQuestionCount(newRun.id, token)
-        setTotalQuestions(total)
-        setCurrentQuestionNumber(1)
-        setLastAnsweredQuestionId(null)
+          // Get total question count and set initial question number
+          const total = await getQuestionCount(newRun.id, token)
+          setTotalQuestions(total)
+          setCurrentQuestionNumber(1)
+          setLastAnsweredQuestionId(null)
 
-        const q = await getNextQuestion(newRun.id, token)
-        setQuestion(q)
-        setAnswer('')
-        setLastResult(null)
-        setSummary(null)
-        await loadRevisions()
-        await loadCompletedRuns()
-        // Navigate away from create page (will show run page automatically)
-        setCurrentPage('home')
+          const q = await getNextQuestion(newRun.id, token)
+          setQuestion(q)
+          setAnswer('')
+          setLastResult(null)
+          setSummary(null)
+          await loadRevisions()
+          await loadCompletedRuns()
+          // Navigate away from create page (will show run page automatically)
+          setCurrentPage('home')
+        } finally {
+          setIsStartingRun(false)
+        }
       }
       // Clear selected files after successful creation
       setSelectedFiles([])
@@ -493,6 +526,19 @@ function App() {
     if (!answer.trim()) {
       setAnswerError('Answer cannot be left blank')
       return
+    }
+    
+    // For multiple choice, ensure we have a valid selection
+    if (question.questionStyle === 'multiple-choice' && question.options) {
+      const validAnswers = [
+        ...question.options.map((_, i) => String.fromCharCode(65 + i)), // A, B, C, D
+        ...question.options.map((_, i) => String(i)), // 0, 1, 2, 3
+        ...question.options, // Option text itself
+      ]
+      if (!validAnswers.includes(answer.trim())) {
+        setAnswerError('Please select an answer option')
+        return
+      }
     }
     
     setAnswerError(null)
@@ -561,15 +607,19 @@ function App() {
   }
 
   const handleLaunchRevision = async (revisionId: string) => {
+    setError(null)
+    setIsStartingRun(true)
+    // Set revision immediately so the loading screen shows
+    const rev = knownRevisions.find(r => r.id === revisionId)
+    if (rev) {
+      setRevision(rev)
+      setShowRevisionList(false)
+    }
     try {
-      setError(null)
       const token = await getToken()
       const newRun = await startRun(revisionId, token)
-      const rev = knownRevisions.find(r => r.id === revisionId)
       if (rev) {
-        setRevision(rev)
         setRun(newRun)
-        setShowRevisionList(false)
         // Load question count and first question
         const count = await getQuestionCount(newRun.id, token)
         setTotalQuestions(count)
@@ -580,6 +630,8 @@ function App() {
       }
     } catch (err: any) {
       setError(err.message ?? 'Failed to start revision')
+    } finally {
+      setIsStartingRun(false)
     }
   }
 
@@ -966,6 +1018,34 @@ function App() {
                     </SelectItem>
                   ))}
                 </Select>
+                <Select
+                  label="Question Style"
+                  placeholder="Select question style"
+                  selectedKeys={form.questionStyle ? [form.questionStyle] : []}
+                  onSelectionChange={(keys) => {
+                    const selected = Array.from(keys)[0] as string
+                    onChangeForm('questionStyle', (selected || 'free-text') as 'free-text' | 'multiple-choice')
+                  }}
+                  variant="bordered"
+                  classNames={selectClassNames}
+                >
+                  <SelectItem 
+                    key="free-text"
+                    classNames={{
+                      base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
+                    }}
+                  >
+                    Free Text
+                  </SelectItem>
+                  <SelectItem 
+                    key="multiple-choice"
+                    classNames={{
+                      base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
+                    }}
+                  >
+                    Multiple Choice
+                  </SelectItem>
+                </Select>
                 <Textarea
                   label="Description"
                   placeholder="Describe what to study, or upload images with text below"
@@ -1152,7 +1232,24 @@ function App() {
             </div>
           )}
 
-          {question ? (
+          {isStartingRun || (!question && run) ? (
+            // Loading screen before test starts
+            <Card className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-orange-200 rounded-lg">
+              <CardBody className="flex flex-col items-center justify-center py-12">
+                <Logo size="xl" className="mb-4 animate-pulse" />
+                <div className="text-6xl mb-4 animate-spin">⏳</div>
+                <p className="text-xl font-semibold text-orange-800 mb-2">Hang on!</p>
+                <p className="text-gray-600 text-center mb-6">
+                  We're generating your revision questions...
+                </p>
+                <div className="flex space-x-2">
+                  <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse"></div>
+                  <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                  <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+                </div>
+              </CardBody>
+            </Card>
+          ) : question ? (
                 <div className="space-y-4">
                   {question.text.startsWith('ERROR:') ? (
                     <Card className="border border-orange-300 shadow-sm bg-white">
@@ -1195,32 +1292,75 @@ function App() {
                     {/* Answer section - shown when no result yet */}
                     {!lastResult && (
                       <div className="space-y-4">
-                        <Textarea
-                          label="Your Answer"
-                          placeholder="Type your answer here... (Press Enter to submit, Shift+Enter for new line)"
-                          value={answer}
-                          onChange={(e) => {
-                            setAnswer(e.target.value)
-                            if (answerError) setAnswerError(null)
-                          }}
-                          onKeyDown={(e) => {
-                            // Submit on Enter (but not Shift+Enter, which creates a new line)
-                            if (e.key === 'Enter' && !e.shiftKey && answer.trim() && !isSubmittingAnswer) {
-                              e.preventDefault()
-                              handleSubmitAnswer()
-                            }
-                          }}
-                          variant="bordered"
-                          minRows={4}
-                          isInvalid={!!answerError}
-                          errorMessage={answerError}
-                          classNames={{
-                            ...inputClassNames,
-                            inputWrapper: answerError
-                              ? "rounded-lg border-2 border-red-400 hover:border-red-500"
-                              : inputClassNames.inputWrapper,
-                          }}
-                        />
+                        {question.questionStyle === 'multiple-choice' && question.options ? (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-3">
+                              Select your answer:
+                            </label>
+                            <div className="space-y-2">
+                              {question.options.map((option, index) => {
+                                const optionLetter = String.fromCharCode(65 + index) // A, B, C, D
+                                const isSelected = answer === optionLetter || answer === String(index) || answer === option
+                                return (
+                                  <button
+                                    key={index}
+                                    type="button"
+                                    onClick={() => {
+                                      setAnswer(optionLetter)
+                                      if (answerError) setAnswerError(null)
+                                    }}
+                                    className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
+                                      isSelected
+                                        ? 'border-orange-500 bg-orange-50 shadow-md'
+                                        : 'border-gray-300 bg-white hover:border-orange-300 hover:bg-orange-50'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-3">
+                                      <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center font-semibold ${
+                                        isSelected
+                                          ? 'bg-orange-600 text-white'
+                                          : 'bg-gray-200 text-gray-700'
+                                      }`}>
+                                        {optionLetter}
+                                      </div>
+                                      <span className="text-gray-800">{option}</span>
+                                    </div>
+                                  </button>
+                                )
+                              })}
+                            </div>
+                            {answerError && (
+                              <p className="mt-2 text-sm text-red-600">{answerError}</p>
+                            )}
+                          </div>
+                        ) : (
+                          <Textarea
+                            label="Your Answer"
+                            placeholder="Type your answer here... (Press Enter to submit, Shift+Enter for new line)"
+                            value={answer}
+                            onChange={(e) => {
+                              setAnswer(e.target.value)
+                              if (answerError) setAnswerError(null)
+                            }}
+                            onKeyDown={(e) => {
+                              // Submit on Enter (but not Shift+Enter, which creates a new line)
+                              if (e.key === 'Enter' && !e.shiftKey && answer.trim() && !isSubmittingAnswer) {
+                                e.preventDefault()
+                                handleSubmitAnswer()
+                              }
+                            }}
+                            variant="bordered"
+                            minRows={4}
+                            isInvalid={!!answerError}
+                            errorMessage={answerError}
+                            classNames={{
+                              ...inputClassNames,
+                              inputWrapper: answerError
+                                ? "rounded-lg border-2 border-red-400 hover:border-red-500"
+                                : inputClassNames.inputWrapper,
+                            }}
+                          />
+                        )}
 
                         <Button
                           onClick={handleSubmitAnswer}

@@ -281,6 +281,60 @@ def test_answer_marking():
     return True
 
 
+def test_question_generation_multiple_choice():
+    """Test fetching and rendering question-generation-multiple-choice prompt."""
+    print("\n" + "=" * 70)
+    print("TEST 7: question-generation-multiple-choice Prompt")
+    print("=" * 70)
+    
+    prompt_data = fetch_prompt("question-generation-multiple-choice")
+    
+    if not prompt_data:
+        print("✗ FAILED: Could not fetch 'question-generation-multiple-choice' prompt from Langfuse")
+        print("  → Create this prompt in Langfuse with name 'question-generation-multiple-choice'")
+        print("  → See LANGFUSE_MULTIPLE_CHOICE_PROMPT.md for details")
+        return False
+    
+    prompt_template = prompt_data.get("prompt")
+    if not prompt_template:
+        print("✗ FAILED: Prompt data exists but 'prompt' field is empty")
+        return False
+    
+    print("✓ PASSED: Successfully fetched 'question-generation-multiple-choice' prompt")
+    print(f"  → Name: {prompt_data.get('name')}")
+    print(f"  → Version: {prompt_data.get('version')}")
+    print(f"  → Environment: {prompt_data.get('environment')}")
+    print(f"  → Length: {len(prompt_template)} characters")
+    
+    # Test rendering with sample variables
+    try:
+        # Get general_context from Langfuse for realistic test
+        general_context_data = fetch_prompt("general-context")
+        general_context = general_context_data.get("prompt") if general_context_data else "Test general context"
+        
+        sample_vars = {
+            "general_context": general_context,
+            "description": "Test revision description about photosynthesis and plant biology.",
+            "desired_count": 3,
+        }
+        
+        rendered = render_prompt(prompt_template, sample_vars)
+        print("✓ PASSED: Successfully rendered template with sample variables")
+        print(f"  → Rendered length: {len(rendered)} characters")
+        print(f"  → Contains description: {'description' in rendered.lower() or 'photosynthesis' in rendered.lower()}")
+        print(f"  → Contains count: {'3' in rendered or 'desired_count' in rendered.lower()}")
+        print(f"  → Contains format instructions: {'question:' in rendered.lower() or 'correct:' in rendered.lower()}")
+    except KeyError as e:
+        print(f"✗ FAILED: Template missing required variable: {e}")
+        print(f"  → Template expects variables: {_extract_variables(prompt_template)}")
+        return False
+    except Exception as e:
+        print(f"✗ FAILED: Error rendering template: {e}")
+        return False
+    
+    return True
+
+
 def test_subject_specific_fallback():
     """Test subject-specific prompt fallback logic."""
     print("\n" + "=" * 70)
@@ -331,7 +385,7 @@ def run_all_tests():
     print("\n" + "=" * 70)
     print("LANGFUSE PROMPT SMOKE TEST")
     print("=" * 70)
-    print("\nThis test verifies that all 5 prompts are correctly set up in Langfuse.")
+    print("\nThis test verifies that all prompts are correctly set up in Langfuse.")
     print("Run this after creating/updating prompts to ensure nothing broke.\n")
     
     results = []
@@ -347,14 +401,15 @@ def run_all_tests():
         print("✗ Set LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY environment variables")
         return False
     
-    # Test 2-6: All 5 prompts
+    # Test 2-6: Core prompts
     results.append(("general-context", test_general_context()))
     results.append(("marking-context", test_marking_context()))
     results.append(("revision-context-template", test_revision_context_template()))
     results.append(("question-generation", test_question_generation()))
     results.append(("answer-marking", test_answer_marking()))
+    results.append(("question-generation-multiple-choice", test_question_generation_multiple_choice()))
     
-    # Test 7: Subject-specific fallback (informational)
+    # Test 8: Subject-specific fallback (informational)
     results.append(("Subject-Specific Fallback", test_subject_specific_fallback()))
     
     # Summary

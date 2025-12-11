@@ -108,6 +108,10 @@ class Question(BaseModel):
 
     id: str
     text: str
+    questionStyle: Optional[str] = None  # 'free-text' or 'multiple-choice'
+    options: Optional[List[str]] = None  # For multiple choice questions
+    correctAnswerIndex: Optional[int] = None  # For multiple choice questions (0-based index)
+    rationale: Optional[str] = None  # Prefetched explanation for multiple choice questions
 
 
 class AnswerRequest(BaseModel):
@@ -385,6 +389,129 @@ def get_marking_context(revision_context: Optional[str] = None) -> str:
 # ---------- Subject definitions (shared between frontend and backend) ----------
 
 # Valid subjects that can be used to differentiate input/output handling
+def parse_multiple_choice_questions(content: str, run_id: str, desired_count: int) -> List[Dict[str, Any]]:
+    """
+    Parse multiple choice questions from OpenAI response content.
+    
+    Supports two formats:
+    1. Structured text format:
+       QUESTION: [question text]
+       A) [option A]
+       B) [option B]
+       C) [option C]
+       D) [option D]
+       CORRECT: [A/B/C/D]
+       RATIONALE: [explanation]
+    
+    2. JSON format (fallback):
+       [{"question": "...", "options": [...], "correct": "A", "rationale": "..."}]
+    
+    Args:
+        content: Raw response content from OpenAI
+        run_id: Run ID for generating question IDs
+        desired_count: Maximum number of questions to parse
+    
+    Returns:
+        List of question dictionaries with keys:
+        - id: Question ID
+        - text: Question text
+        - questionStyle: "multiple-choice"
+        - options: List of option strings
+        - correctAnswerIndex: 0-based index of correct answer
+        - rationale: Explanation for the correct answer
+    """
+    questions = []
+    current_question = None
+    current_options = []
+    current_correct = None
+    current_rationale = None
+    in_rationale = False
+    
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Handle both "QUESTION:" and "QUESTION 1:" formats
+        if line.upper().startswith("QUESTION") and ":" in line:
+            # Save previous question if exists
+            if current_question and current_options and current_correct is not None:
+                correct_index = ord(current_correct.upper()) - ord('A')
+                if 0 <= correct_index < len(current_options):
+                    questions.append({
+                        "id": f"{run_id}-q{len(questions)+1}",
+                        "text": current_question,
+                        "questionStyle": "multiple-choice",
+                        "options": current_options,
+                        "correctAnswerIndex": correct_index,
+                        "rationale": current_rationale or "Correct answer selected.",
+                    })
+            
+            # Start new question - extract text after "QUESTION" and colon
+            # Handles: "QUESTION:", "QUESTION 1:", "QUESTION 2:", etc.
+            question_part = line.split(":", 1)[1] if ":" in line else ""
+            # Remove any escape sequences or extra whitespace (handle \/ as /)
+            current_question = question_part.replace('\\/', '/').replace('\\', '').strip()
+            current_options = []
+            current_correct = None
+            current_rationale = None
+            in_rationale = False
+        elif line.startswith(("A)", "B)", "C)", "D)")):
+            option_text = line[2:].strip()
+            # Remove any escape sequences or extra whitespace (handle \/ as /)
+            option_text = option_text.replace('\\/', '/').replace('\\', '').strip()
+            current_options.append(option_text)
+            in_rationale = False
+        elif line.startswith("CORRECT:"):
+            current_correct = line.replace("CORRECT:", "").strip().upper()
+            in_rationale = False
+        elif line.startswith("RATIONALE:") or line.startswith("EXPLANATION:"):
+            rationale_part = line.split(":", 1)[1].strip() if ":" in line else ""
+            # Remove any escape sequences (handle \/ as /)
+            current_rationale = rationale_part.replace('\\/', '/').replace('\\', '').strip()
+            in_rationale = True
+        elif in_rationale and current_rationale:
+            # Continue building rationale - remove escape sequences
+            current_rationale += " " + line.replace('\\/', '/').replace('\\', '').strip().replace('\\', '').strip()
+    
+    # Save last question
+    if current_question and current_options and current_correct is not None:
+        correct_index = ord(current_correct.upper()) - ord('A')
+        if 0 <= correct_index < len(current_options):
+            questions.append({
+                "id": f"{run_id}-q{len(questions)+1}",
+                "text": current_question,
+                "questionStyle": "multiple-choice",
+                "options": current_options,
+                "correctAnswerIndex": correct_index,
+                "rationale": current_rationale or "Correct answer selected.",
+            })
+    
+    # If structured parsing failed, try JSON format as fallback
+    if not questions:
+        try:
+            import json
+            parsed = json.loads(content)
+            if isinstance(parsed, list):
+                for i, q in enumerate(parsed[:desired_count]):
+                    if "question" in q and "options" in q and "correct" in q:
+                        correct_letter = str(q["correct"]).upper()
+                        correct_index = ord(correct_letter) - ord('A')
+                        if 0 <= correct_index < len(q["options"]):
+                            questions.append({
+                                "id": f"{run_id}-q{i+1}",
+                                "text": q["question"],
+                                "questionStyle": "multiple-choice",
+                                "options": q["options"],
+                                "correctAnswerIndex": correct_index,
+                                "rationale": q.get("rationale", q.get("explanation", "Correct answer selected.")),
+                            })
+        except (json.JSONDecodeError, KeyError, ValueError):
+            pass
+    
+    return questions
+
+
 def get_marking_json_instructions(subject: Optional[str] = None) -> str:
     """
     Get JSON response format instructions for AI marking.
@@ -491,6 +618,7 @@ async def create_revision(
     desiredQuestionCount: str = Form(...),  # Accept as string, convert to int
     accuracyThreshold: str = Form(...),  # Accept as string, convert to int
     topics: str = Form("[]"),
+    questionStyle: str = Form("free-text"),  # 'free-text' or 'multiple-choice'
     files: List[UploadFile] = File(default_factory=list),
 ):
     """
@@ -591,6 +719,12 @@ async def create_revision(
     # Use storage adapter to persist (database if available, otherwise in-memory)
     storage = StorageAdapter(user, db, session_id)
     
+    # Validate questionStyle
+    valid_question_styles = ['free-text', 'multiple-choice']
+    if questionStyle not in valid_question_styles:
+        logger.warning(f"Invalid questionStyle: {questionStyle}, defaulting to 'free-text'")
+        questionStyle = 'free-text'
+    
     revision_data = {
         "id": revision_id,
         "name": name,
@@ -599,6 +733,7 @@ async def create_revision(
         "description": combined_description or None,
         "desiredQuestionCount": desired_question_count,
         "accuracyThreshold": accuracy_threshold,
+        "questionStyle": questionStyle,
         "extractedTexts": extracted_texts,
         "uploadedFiles": [f.filename for f in files] if files else None,
         "extractedTextPreview": extracted_preview,
@@ -709,11 +844,20 @@ async def start_run(
     # Get revision data for question generation
     rev_def = revision
 
+    # Get question style from revision
+    question_style = rev_def.get("questionStyle", "free-text")
+    
     # Default fallback questions (use run_id to ensure unique IDs)
-    questions: List[dict] = [
-        {"id": f"{run_id}-q1", "text": "What is 2 + 2?"},
-        {"id": f"{run_id}-q2", "text": "What is 3 × 5?"},
-    ]
+    if question_style == "multiple-choice":
+        questions: List[dict] = [
+            {"id": f"{run_id}-q1", "text": "What is 2 + 2?", "questionStyle": "multiple-choice", "options": ["3", "4", "5", "6"], "correctAnswerIndex": 1},
+            {"id": f"{run_id}-q2", "text": "What is 3 × 5?", "questionStyle": "multiple-choice", "options": ["12", "15", "18", "20"], "correctAnswerIndex": 1},
+        ]
+    else:
+        questions: List[dict] = [
+            {"id": f"{run_id}-q1", "text": "What is 2 + 2?"},
+            {"id": f"{run_id}-q2", "text": "What is 3 × 5?"},
+        ]
 
     # If OpenAI is configured, try to generate questions from the revision description
     client = get_openai_client()
@@ -749,10 +893,23 @@ async def start_run(
             # Get subject for subject-specific prompts
             subject = revision.get("subject") if revision else None
             
-            # Try to fetch prompt from Langfuse, fallback to hardcoded if not available
-            # Will try subject-specific prompt first (e.g., 'question-generation-mathematics'),
-            # then fall back to generic 'question-generation'
-            langfuse_prompt_data = fetch_prompt("question-generation", subject=subject)
+            # Determine which prompt to fetch based on question style
+            if question_style == "multiple-choice":
+                # Try to fetch multiple choice prompt from Langfuse
+                # Will try subject-specific first (e.g., 'question-generation-multiple-choice-mathematics'),
+                # then generic multiple choice (e.g., 'question-generation-multiple-choice'),
+                # then fall back to generic question-generation
+                base_prompt_name = "question-generation-multiple-choice"
+                langfuse_prompt_data = fetch_prompt(base_prompt_name, subject=subject)
+                
+                # If subject-specific multiple choice not found, try generic multiple choice
+                if not langfuse_prompt_data:
+                    langfuse_prompt_data = fetch_prompt(base_prompt_name)
+            else:
+                # Try to fetch free-text prompt from Langfuse
+                # Will try subject-specific prompt first (e.g., 'question-generation-mathematics'),
+                # then fall back to generic 'question-generation'
+                langfuse_prompt_data = fetch_prompt("question-generation", subject=subject)
             
             if langfuse_prompt_data and langfuse_prompt_data.get("prompt"):
                 # Use Langfuse prompt
@@ -767,18 +924,40 @@ async def start_run(
                     },
                 )
                 system_message = "You generate short, clear study questions only."
-                logger.info("Using Langfuse prompt for question generation")
+                logger.info(f"Using Langfuse prompt for question generation (style: {question_style})")
             else:
                 # Fallback to hardcoded prompt
                 general_context = get_ai_context()
-                prompt = (
-                    f"{general_context}\n\n"
-                    "Generate concise practice questions for a student "
-                    "based on the following revision description. "
-                    "Return each question on its own line, with no numbering or extra text.\n\n"
-                    f"Revision description:\n{description}\n\n"
-                    f"Number of questions: {desired_count}"
-                )
+                if question_style == "multiple-choice":
+                    prompt = (
+                        f"{general_context}\n\n"
+                        "Generate multiple choice practice questions for a student "
+                        "based on the following revision description. "
+                        "For each question, provide:\n"
+                        "1. The question text\n"
+                        "2. Four answer options (A, B, C, D)\n"
+                        "3. The correct answer (A, B, C, or D)\n"
+                        "4. A brief explanation/rationale for why the correct answer is correct\n\n"
+                        "Format each question as:\n"
+                        "QUESTION: [question text]\n"
+                        "A) [option A]\n"
+                        "B) [option B]\n"
+                        "C) [option C]\n"
+                        "D) [option D]\n"
+                        "CORRECT: [A/B/C/D]\n"
+                        "RATIONALE: [explanation of why the correct answer is correct]\n\n"
+                        f"Revision description:\n{description}\n\n"
+                        f"Number of questions: {desired_count}"
+                    )
+                else:
+                    prompt = (
+                        f"{general_context}\n\n"
+                        "Generate concise practice questions for a student "
+                        "based on the following revision description. "
+                        "Return each question on its own line, with no numbering or extra text.\n\n"
+                        f"Revision description:\n{description}\n\n"
+                        f"Number of questions: {desired_count}"
+                    )
                 system_message = "You generate short, clear study questions only."
                 logger.info("Using fallback prompt for question generation (Langfuse prompt not found)")
             
@@ -788,10 +967,12 @@ async def start_run(
             ]
             
             model = get_openai_model()
+            # Multiple choice questions need more tokens (question + 4 options + rationale per question)
+            max_tokens = desired_count * 200 if question_style == "multiple-choice" else desired_count * 64
             openai_response = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                max_tokens=desired_count * 64,
+                max_tokens=max_tokens,
                 temperature=0.7,
             )
             content = openai_response.choices[0].message.content or ""
@@ -805,8 +986,9 @@ async def start_run(
                     input_data={"messages": messages},
                     output=content,
                     metadata={
-                        "max_tokens": desired_count * 64,
+                        "max_tokens": max_tokens,
                         "temperature": 0.7,
+                        "question_style": question_style,
                     },
                 )
                 # End the trace after generation is complete
@@ -822,16 +1004,28 @@ async def start_run(
                     logger.warning(f"Failed to end trace: {e}")
             
             logger.info(f"OpenAI response received: {content[:200]}...")
-            lines = [ln.strip("- ").strip() for ln in (content or "").splitlines()]
-            lines = [ln for ln in lines if ln]
-            if lines:
-                questions = [
-                    {"id": f"{run_id}-q{i+1}", "text": text}
-                    for i, text in enumerate(lines[:desired_count])
-                ]
-                logger.info(f"Successfully generated {len(questions)} questions")
+            
+            if question_style == "multiple-choice":
+                # Parse multiple choice questions with options, correct answer, and rationale
+                questions = parse_multiple_choice_questions(content, run_id, desired_count)
+                
+                if questions:
+                    logger.info(f"Successfully generated {len(questions)} multiple choice questions")
+                else:
+                    logger.warning(f"Failed to parse multiple choice questions from response. Content preview: {content[:200]}...")
             else:
-                error_message = "OpenAI returned an empty response. Please try again or check your API configuration."
+                # Parse free-text questions (original logic)
+                lines = [ln.strip("- ").strip() for ln in (content or "").splitlines()]
+                lines = [ln for ln in lines if ln]
+                if lines:
+                    questions = [
+                        {"id": f"{run_id}-q{i+1}", "text": text}
+                        for i, text in enumerate(lines[:desired_count])
+                    ]
+                    logger.info(f"Successfully generated {len(questions)} questions")
+            
+            if not questions:
+                error_message = "OpenAI returned an empty response or failed to parse questions. Please try again or check your API configuration."
                 logger.error(error_message)
         except Exception as e:
             # Return error instead of falling back
@@ -954,7 +1148,20 @@ async def get_next_question(
     if len(answers) >= len(questions):
         return None
     q = questions[len(answers)]
-    return Question(id=q["id"], text=q["text"])
+    # Return full question data including multiple choice fields
+    question_dict = {
+        "id": q["id"],
+        "text": q["text"],
+    }
+    if q.get("questionStyle"):
+        question_dict["questionStyle"] = q["questionStyle"]
+    if q.get("options"):
+        question_dict["options"] = q["options"]
+    if q.get("correctAnswerIndex") is not None:
+        question_dict["correctAnswerIndex"] = q["correctAnswerIndex"]
+    if q.get("rationale"):
+        question_dict["rationale"] = q["rationale"]
+    return Question(**question_dict)
 
 
 @app.post("/api/runs/{run_id}/answers", response_model=AnswerResult)
@@ -1001,13 +1208,15 @@ async def submit_answer(
     
     revision_id = run["revisionId"]
     
-    # Try AI-based marking if OpenAI is configured
+    # Get question details
     client = get_openai_client()
     question_text = ""
+    question_data = None
     questions = storage.get_questions(run_id)
     for q in questions:
         if q.get("id") == payload.questionId:
             question_text = q.get("text", "")
+            question_data = q
             break
 
     # Get revision context for RAG-style marking
@@ -1025,6 +1234,67 @@ async def submit_answer(
                     for filename, text in extracted_texts.items()
                 ])
 
+    # Check if this is a multiple choice question with prefetched rationale
+    is_multiple_choice = question_data and question_data.get("questionStyle") == "multiple-choice"
+    if is_multiple_choice and question_data.get("options") and question_data.get("correctAnswerIndex") is not None:
+        # Use prefetched rationale for multiple choice questions
+        # Parse the answer - could be option index (0-3) or option letter (A-D) or option text
+        selected_index = None
+        student_answer_lower = payload.answer.strip().lower()
+        
+        # Try to match by option letter (A, B, C, D)
+        if student_answer_lower in ['a', 'b', 'c', 'd']:
+            selected_index = ord(student_answer_lower.upper()) - ord('A')
+        # Try to match by option index (0, 1, 2, 3)
+        elif student_answer_lower.isdigit():
+            selected_index = int(student_answer_lower)
+        # Try to match by option text
+        else:
+            options = question_data.get("options", [])
+            for i, option in enumerate(options):
+                if option.lower().strip() == student_answer_lower:
+                    selected_index = i
+                    break
+        
+        correct_index = question_data.get("correctAnswerIndex")
+        is_correct = selected_index is not None and selected_index == correct_index
+        
+        # Determine score based on correctness
+        if is_correct:
+            score = "Full Marks"
+            is_correct_bool = True
+        else:
+            score = "Incorrect"
+            is_correct_bool = False
+        
+        # Get the correct answer text
+        options = question_data.get("options", [])
+        correct_answer_text = options[correct_index] if 0 <= correct_index < len(options) else f"Option {chr(ord('A') + correct_index)}"
+        
+        # Use prefetched rationale or generate a simple one
+        rationale = question_data.get("rationale", "Correct answer selected.") if is_correct else (
+            question_data.get("rationale", f"The correct answer is {correct_answer_text}.")
+        )
+        
+        # If incorrect, enhance rationale with correct answer
+        if not is_correct:
+            rationale = f"{rationale} The correct answer is: {correct_answer_text}."
+        
+        result = AnswerResult(
+            questionId=payload.questionId,
+            studentAnswer=payload.answer,
+            isCorrect=is_correct_bool,
+            score=score,
+            correctAnswer=correct_answer_text,
+            explanation=rationale,
+        )
+        
+        # Store the answer
+        storage.store_answer(run_id, result.model_dump())
+        
+        logger.info(f"Multiple choice question answered - Selected: {selected_index}, Correct: {correct_index}, Score: {score}")
+        return result
+    
     # Log diagnostic information
     logger.info(f"Marking request - Question ID: {payload.questionId}, Run ID: {run_id}")
     logger.info(f"OpenAI client available: {client is not None}")
@@ -1037,7 +1307,7 @@ async def submit_answer(
     else:
         logger.warning(f"No question text found for questionId {payload.questionId} in run {run_id}")
         logger.warning(f"Available questions in run: {[q.get('id') for q in RUN_QUESTIONS.get(run_id, [])]}")
-
+    
     if not client:
         logger.warning(f"OpenAI client not available for marking question {payload.questionId} - using fallback")
     elif not question_text:

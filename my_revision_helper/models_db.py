@@ -40,6 +40,7 @@ class Revision(Base):
     description = Column(Text)
     desired_question_count = Column(Integer, nullable=False)
     accuracy_threshold = Column(Integer, nullable=False)
+    question_style = Column(String, default="free-text")  # 'free-text' or 'multiple-choice'
     extracted_texts = Column(JSON)  # Dict of filename -> text
     uploaded_files = Column(JSON)  # List of filenames
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -78,6 +79,10 @@ class RunQuestion(Base):
     run_id = Column(String, ForeignKey("revision_runs.id"), nullable=False)
     question_text = Column(Text, nullable=False)
     question_index = Column(Integer, nullable=False)  # Order in the run
+    question_style = Column(String)  # 'free-text' or 'multiple-choice'
+    options = Column(JSON)  # List of strings for multiple choice questions
+    correct_answer_index = Column(Integer)  # 0-based index for multiple choice questions
+    rationale = Column(Text)  # Prefetched explanation for multiple choice questions
     
     run = relationship("RevisionRun", back_populates="questions")
 

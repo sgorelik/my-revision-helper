@@ -93,6 +93,7 @@ class StorageAdapter:
                 description=revision_data.get("description"),
                 desired_question_count=revision_data["desiredQuestionCount"],
                 accuracy_threshold=revision_data["accuracyThreshold"],
+                question_style=revision_data.get("questionStyle", "free-text"),
                 extracted_texts=revision_data.get("extractedTexts", {}),
                 uploaded_files=revision_data.get("uploadedFiles"),
             )
@@ -108,6 +109,7 @@ class StorageAdapter:
                 "description": revision.description,
                 "desiredQuestionCount": revision.desired_question_count,
                 "accuracyThreshold": revision.accuracy_threshold,
+                "questionStyle": revision.question_style,
                 "uploadedFiles": revision.uploaded_files,
                 "extractedTextPreview": revision_data.get("extractedTextPreview"),
             }
@@ -146,6 +148,7 @@ class StorageAdapter:
                 "description": r.description,
                 "desiredQuestionCount": r.desired_question_count,
                 "accuracyThreshold": r.accuracy_threshold,
+                "questionStyle": r.question_style,
                 "uploadedFiles": r.uploaded_files,
                 "extractedTextPreview": None,
             } for r in revisions]
@@ -191,6 +194,7 @@ class StorageAdapter:
                 "description": revision.description,
                 "desiredQuestionCount": revision.desired_question_count,
                 "accuracyThreshold": revision.accuracy_threshold,
+                "questionStyle": revision.question_style,
                 "extractedTexts": revision.extracted_texts or {},
                 "uploadedFiles": revision.uploaded_files,
             }
@@ -361,6 +365,10 @@ class StorageAdapter:
                         run_id=run_id,
                         question_text=q["text"],
                         question_index=idx,
+                        question_style=q.get("questionStyle"),
+                        options=q.get("options"),
+                        correct_answer_index=q.get("correctAnswerIndex"),
+                        rationale=q.get("rationale"),
                     )
                     self.db.add(question)
                 self.db.commit()
@@ -381,7 +389,23 @@ class StorageAdapter:
                 RunQuestion.run_id == run_id
             ).order_by(RunQuestion.question_index).all()
             
-            return [{"id": q.id, "text": q.question_text} for q in questions]
+            result = []
+            for q in questions:
+                question_dict = {
+                    "id": q.id,
+                    "text": q.question_text,
+                }
+                # Include multiple choice fields if present
+                if q.question_style:
+                    question_dict["questionStyle"] = q.question_style
+                if q.options:
+                    question_dict["options"] = q.options
+                if q.correct_answer_index is not None:
+                    question_dict["correctAnswerIndex"] = q.correct_answer_index
+                if q.rationale:
+                    question_dict["rationale"] = q.rationale
+                result.append(question_dict)
+            return result
         else:
             # In-memory storage
             return self._questions.get(run_id, [])
