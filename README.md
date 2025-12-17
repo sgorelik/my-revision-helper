@@ -62,7 +62,22 @@ cd frontend
 npm install
 ```
 
-### 4. Start the Services
+### 4. Set Up Git Hooks (Recommended)
+
+A pre-push hook is available to automatically run checks before pushing code. This helps catch errors before they reach the remote repository.
+
+```bash
+./setup-git-hooks.sh
+```
+
+This will install a git hook that runs the following checks before every `git push`:
+1. **Frontend build** (`npm run build` in the frontend directory)
+2. **Unit tests** (`pytest -m unit`)
+3. **Fast integration tests** (`pytest -m "integration and not slow"`)
+
+If any check fails, the push will be aborted. This ensures that only code that builds successfully and passes all tests can be pushed to the repository.
+
+### 5. Start the Services
 
 **Terminal 1 - Temporal Server** (optional, for workflow features):
 ```bash
@@ -85,7 +100,7 @@ cd frontend
 npm run dev
 ```
 
-### 5. Access the Application
+### 6. Access the Application
 
 Open your browser to: `http://localhost:5173`
 
