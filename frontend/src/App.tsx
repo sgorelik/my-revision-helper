@@ -1217,24 +1217,26 @@ function App() {
                     variant="bordered"
                     classNames={selectClassNames}
                   >
-                    <SelectItem 
-                      key="none"
-                      classNames={{
-                        base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
-                      }}
-                    >
-                      New Prep Check
-                    </SelectItem>
-                    {previousPrepChecks.map((check) => (
+                    {[
                       <SelectItem 
-                        key={check.id}
+                        key="none"
                         classNames={{
                           base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
                         }}
                       >
-                        {check.subject} - {new Date(check.createdAt).toLocaleDateString()}
-                      </SelectItem>
-                    ))}
+                        New Prep Check
+                      </SelectItem>,
+                      ...previousPrepChecks.map((check) => (
+                        <SelectItem 
+                          key={check.id}
+                          classNames={{
+                            base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
+                          }}
+                        >
+                          {check.subject} - {new Date(check.createdAt).toLocaleDateString()}
+                        </SelectItem>
+                      ))
+                    ]}
                   </Select>
                 )}
 
