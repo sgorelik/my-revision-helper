@@ -44,6 +44,7 @@ COPY my_revision_helper ./my_revision_helper
 # Copy migration scripts
 COPY migrate_*.py ./
 COPY run_migrations.py ./
+COPY ensure_migrations.py ./
 
 # Expose port (Railway sets PORT env var)
 ENV PORT=8000
@@ -53,14 +54,15 @@ EXPOSE 8000
 RUN echo '#!/bin/sh\n\
 echo "🔄 Running database migrations..."\n\
 if [ -n "$DATABASE_URL" ]; then\n\
-  if python run_migrations.py; then\n\
-    echo "✅ Migrations completed successfully"\n\
-  else\n\
+  echo "Step 1: Running migration scripts..."\n\
+  python run_migrations.py || {\n\
     MIGRATION_EXIT=$?\n\
     echo "⚠️  Migrations failed with exit code $MIGRATION_EXIT"\n\
-    echo "   Check logs above for details"\n\
-    echo "   Continuing with server startup anyway..."\n\
-  fi\n\
+    echo "   Attempting to ensure critical columns exist..."\n\
+    python ensure_migrations.py || echo "   Column check also failed"\n\
+  }\n\
+  echo "Step 2: Verifying critical columns exist..."\n\
+  python ensure_migrations.py || echo "⚠️  Some columns may still be missing"\n\
 else\n\
   echo "⚠️  DATABASE_URL not set - skipping migrations"\n\
 fi\n\
