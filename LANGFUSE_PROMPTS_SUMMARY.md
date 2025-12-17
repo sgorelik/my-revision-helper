@@ -32,7 +32,7 @@ This document lists all prompts that need to be configured in Langfuse for the a
 ### 6. `question-generation-multiple-choice` ⭐ NEW
 **Purpose**: Generate multiple choice questions with options, correct answer, and rationale  
 **Variables**: `general_context`, `description`, `desired_count`  
-**Status**: ❌ **NEEDS TO BE CREATED**
+**Status**: Created
 
 ---
 

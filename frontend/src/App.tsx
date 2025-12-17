@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
 import {
   Card,
   CardBody,
@@ -15,6 +16,7 @@ import {
   TableCell,
   Select,
   SelectItem,
+  Pagination,
 } from '@heroui/react'
 import {
   PhotoIcon,
@@ -261,6 +263,62 @@ async function listCompletedRuns(token?: string | null): Promise<CompletedRun[]>
   return res.json()
 }
 
+async function checkPrep(
+  subject: string,
+  description: string,
+  files: File[],
+  previousPrepCheckId?: string | null,
+  token?: string | null
+): Promise<{ feedback: string; prepCheckId?: string }> {
+  const formData = new FormData()
+  formData.append('subject', subject)
+  formData.append('description', description || '')
+  if (previousPrepCheckId) {
+    formData.append('previousPrepCheckId', previousPrepCheckId)
+  }
+  
+  // Add files if provided
+  if (files && files.length > 0) {
+    files.forEach((file) => {
+      formData.append('files', file)
+    })
+  }
+
+  const headers: HeadersInit = {}
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
+  const res = await fetch(`${API_BASE}/prep-check`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to check prep work' }))
+    throw new Error(error.detail || 'Failed to check prep work')
+  }
+  return res.json()
+}
+
+async function flagQuestion(runId: string, questionId: string, flagType: string, token?: string | null): Promise<void> {
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(`${API_BASE}/runs/${runId}/questions/${questionId}/flag`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ flagType }),
+  })
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: 'Failed to flag question' }))
+    throw new Error(error.detail || 'Failed to flag question')
+  }
+}
+
 async function deleteRevision(revisionId: string, token?: string | null): Promise<void> {
   const headers: HeadersInit = {}
   if (token) {
@@ -301,7 +359,18 @@ function App() {
   const [knownRevisions, setKnownRevisions] = useState<RevisionConfig[]>([])
   const [completedRuns, setCompletedRuns] = useState<CompletedRun[]>([])
   const [showRevisionList, setShowRevisionList] = useState(false)
-  const [currentPage, setCurrentPage] = useState<'home' | 'create'>('home')
+  const [currentPage, setCurrentPage] = useState<'home' | 'create' | 'prep-check'>('home')
+  const [prepCheckState, setPrepCheckState] = useState<'config' | 'checking' | 'results' | null>(null)
+  const [prepCheckForm, setPrepCheckForm] = useState({
+    subject: '',
+    description: '',
+    previousPrepCheckId: null as string | null,
+  })
+  const [prepCheckFiles, setPrepCheckFiles] = useState<File[]>([])
+  const [prepCheckResult, setPrepCheckResult] = useState<string | null>(null)
+  const [prepCheckId, setPrepCheckId] = useState<string | null>(null)
+  const [isCheckingPrep, setIsCheckingPrep] = useState(false)
+  const [previousPrepChecks, setPreviousPrepChecks] = useState<Array<{id: string; subject: string; createdAt: string}>>([])
   const [form, setForm] = useState({
     name: '',
     subject: '',
@@ -354,6 +423,11 @@ function App() {
   const [formErrors, setFormErrors] = useState<{name?: string; subject?: string; description?: string}>({})
   const [answerError, setAnswerError] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<{isOpen: boolean; revisionId: string | null}>({isOpen: false, revisionId: null})
+  const [revisionsPage, setRevisionsPage] = useState(1)
+  const [completedRunsPage, setCompletedRunsPage] = useState(1)
+  const itemsPerPage = 5
+  const [flagModal, setFlagModal] = useState<{isOpen: boolean; questionId: string | null}>({isOpen: false, questionId: null})
+  const [isSubmittingFlag, setIsSubmittingFlag] = useState(false)
 
 
   const loadRevisions = async () => {
@@ -666,14 +740,75 @@ function App() {
     setTotalQuestions(0)
     setShowRevisionList(true)
     setCurrentPage('home')
+    setPrepCheckState(null)
+    setPrepCheckResult(null)
+    setPrepCheckId(null)
+    setPrepCheckForm({ subject: '', description: '', previousPrepCheckId: null })
+    setPrepCheckFiles([])
+    setPreviousPrepChecks([])
+  }
+
+  const handleStartPrepCheck = () => {
+    setCurrentPage('prep-check')
+    setPrepCheckState('config')
+    setShowRevisionList(false)
+    loadPreviousPrepChecks()
+  }
+
+  const handleSubmitPrepCheck = async () => {
+    if (!prepCheckForm.subject || (prepCheckFiles.length === 0 && !prepCheckForm.description)) {
+      setError('Please provide a subject and either upload files or provide a description')
+      return
+    }
+    
+    setIsCheckingPrep(true)
+    setPrepCheckState('checking')
+    setError(null)
+    
+    try {
+      const token = await getToken()
+      const result = await checkPrep(
+        prepCheckForm.subject,
+        prepCheckForm.description,
+        prepCheckFiles,
+        prepCheckForm.previousPrepCheckId,
+        token
+      )
+      setPrepCheckResult(result.feedback)
+      setPrepCheckId(result.prepCheckId || null)
+      setPrepCheckState('results')
+    } catch (err: any) {
+      setError(err.message ?? 'Failed to check prep work')
+      setPrepCheckState('config')
+    } finally {
+      setIsCheckingPrep(false)
+    }
+  }
+
+  const loadPreviousPrepChecks = async () => {
+    try {
+      const token = await getToken()
+      const headers: HeadersInit = {}
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+      const res = await fetch(`${API_BASE}/prep-checks`, { headers })
+      if (res.ok) {
+        const checks = await res.json()
+        setPreviousPrepChecks(checks.map((c: any) => ({
+          id: c.id,
+          subject: c.subject,
+          createdAt: c.createdAt,
+        })))
+      }
+    } catch (err) {
+      // Silently fail - previous prep checks are optional
+      console.warn('Failed to load previous prep checks:', err)
+    }
   }
 
   const handleLoadSummary = async () => {
     if (!run) return
-    if (!isAuthenticated) {
-      // Non-authenticated users shouldn't see summaries
-      return
-    }
     try {
       const token = await getToken()
       const s = await getRunSummary(run.id, token)
@@ -683,16 +818,16 @@ function App() {
     }
   }
 
-  // Auto-load summary when no more questions (only for authenticated users)
+  // Auto-load summary when no more questions
   useEffect(() => {
-    if (run && !question && !summary && totalQuestions > 0 && isAuthenticated) {
+    if (run && !question && !summary && totalQuestions > 0) {
       // Small delay to show animation
       const timer = setTimeout(() => {
         handleLoadSummary()
       }, 1500)
       return () => clearTimeout(timer)
     }
-  }, [run, question, summary, totalQuestions, isAuthenticated])
+  }, [run, question, summary, totalQuestions])
 
   // Load revisions and completed runs on mount and when auth state changes
   useEffect(() => {
@@ -703,14 +838,24 @@ function App() {
     }
   }, [authLoading, isAuthenticated])
 
-  // Load revisions and completed runs on mount and when auth state changes
+  // Reset pagination when lists change
   useEffect(() => {
-    if (!authLoading) {
-      loadRevisions()
-      loadCompletedRuns()
-      setShowRevisionList(true)
+    const maxPage = Math.ceil(knownRevisions.length / itemsPerPage)
+    if (revisionsPage > maxPage && maxPage > 0) {
+      setRevisionsPage(maxPage)
+    } else if (knownRevisions.length === 0) {
+      setRevisionsPage(1)
     }
-  }, [authLoading, isAuthenticated])
+  }, [knownRevisions.length, revisionsPage])
+
+  useEffect(() => {
+    const maxPage = Math.ceil(completedRuns.length / itemsPerPage)
+    if (completedRunsPage > maxPage && maxPage > 0) {
+      setCompletedRunsPage(maxPage)
+    } else if (completedRuns.length === 0) {
+      setCompletedRunsPage(1)
+    }
+  }, [completedRuns.length, completedRunsPage])
 
   // Reset image error when user changes
   useEffect(() => {
@@ -813,6 +958,30 @@ function App() {
       {/* Revision Lists View (Homepage) */}
       {currentPage === 'home' && showRevisionList && !revision && !summary && (
         <div className="space-y-6">
+          {/* Check my Prep Card */}
+          <Card className="border border-gray-200 shadow-sm bg-gradient-to-r from-cyan-50 to-orange-50">
+            <CardBody className="p-6">
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-2">
+                    <CheckCircleIcon className="w-6 h-6 text-cyan-600" />
+                    <h2 className="text-2xl font-semibold text-gray-900">Check my Prep</h2>
+                  </div>
+                  <p className="text-gray-700 mb-4">
+                    Friendly AI companion that will check the quality of your prep work, BUT WILL NOT do your prep for you.
+                  </p>
+                  <Button
+                    onClick={handleStartPrepCheck}
+                    className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                    startContent={<CheckCircleIcon className="w-4 h-4" />}
+                  >
+                    Check my Prep
+                  </Button>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
+
           {/* Revisions Section - Unified */}
           <Card className="border border-gray-200 shadow-sm">
             <CardHeader className="border-b border-gray-200 bg-white">
@@ -830,8 +999,12 @@ function App() {
             </CardHeader>
             <CardBody className="p-4">
               {knownRevisions.length > 0 ? (
-                <div className="space-y-2">
-                  {knownRevisions.map((r) => (
+                <>
+                  <div className="space-y-2">
+                    {[...knownRevisions]
+                      .reverse()
+                      .slice((revisionsPage - 1) * itemsPerPage, revisionsPage * itemsPerPage)
+                      .map((r) => (
                     <div key={r.id} className="border border-gray-200 rounded-lg p-4 bg-white">
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
@@ -881,7 +1054,26 @@ function App() {
                       </div>
                     </div>
                   ))}
-                </div>
+                  </div>
+                  {knownRevisions.length > itemsPerPage && (
+                    <div className="flex justify-center mt-4">
+                      <Pagination
+                        total={Math.ceil(knownRevisions.length / itemsPerPage)}
+                        page={revisionsPage}
+                        onChange={setRevisionsPage}
+                        color="warning"
+                        classNames={{
+                          wrapper: "gap-0",
+                          base: "gap-0",
+                          item: "w-8 h-8 text-sm rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50 data-[selected=true]:bg-gradient-to-r data-[selected=true]:from-orange-600 data-[selected=true]:to-cyan-600 data-[selected=true]:text-white data-[selected=true]:border-orange-400",
+                          cursor: "hidden",
+                          prev: "rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50",
+                          next: "rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50",
+                        }}
+                      />
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="text-center py-8 text-gray-500">
                   <p className="mb-4">No revisions yet.</p>
@@ -909,7 +1101,10 @@ function App() {
               </CardHeader>
               <CardBody className="p-4">
                 <div className="space-y-2">
-                  {completedRuns.map((completed) => {
+                  {[...completedRuns]
+                    .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime())
+                    .slice((completedRunsPage - 1) * itemsPerPage, completedRunsPage * itemsPerPage)
+                    .map((completed) => {
                     // Determine status color (simplified - just for border)
                     const getStatusColor = () => {
                       if (completed.score > completed.threshold) {
@@ -950,9 +1145,337 @@ function App() {
                     )
                   })}
                 </div>
+                {completedRuns.length > itemsPerPage && (
+                  <div className="flex justify-center mt-4">
+                    <Pagination
+                      total={Math.ceil(completedRuns.length / itemsPerPage)}
+                      page={completedRunsPage}
+                      onChange={setCompletedRunsPage}
+                      color="warning"
+                      classNames={{
+                        wrapper: "gap-0",
+                        base: "gap-0",
+                        item: "w-8 h-8 text-sm rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50 data-[selected=true]:bg-gradient-to-r data-[selected=true]:from-orange-600 data-[selected=true]:to-cyan-600 data-[selected=true]:text-white data-[selected=true]:border-orange-400",
+                        cursor: "hidden",
+                        prev: "rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50",
+                        next: "rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50",
+                      }}
+                    />
+                  </div>
+                )}
               </CardBody>
             </Card>
           )}
+        </div>
+      )}
+
+      {/* Prep Check Configuration Page */}
+      {currentPage === 'prep-check' && prepCheckState === 'config' && (
+        <div className="mb-6">
+          <div className="mb-4">
+            <h2 className="text-2xl font-semibold text-gray-900 mb-1">Check my Prep</h2>
+            <p className="text-sm text-gray-600">
+              Upload your prep work and get AI feedback on quality, without revealing correct answers
+            </p>
+          </div>
+          <Card className="border border-gray-200 shadow-sm bg-white">
+            <CardBody className="p-6">
+              <div className="space-y-4 w-full">
+                <Select
+                  label="Subject"
+                  placeholder="Select a subject"
+                  selectedKeys={prepCheckForm.subject ? [prepCheckForm.subject] : []}
+                  onSelectionChange={(keys) => {
+                    const selected = Array.from(keys)[0] as string
+                    setPrepCheckForm({ ...prepCheckForm, subject: selected || '' })
+                  }}
+                  required
+                  variant="bordered"
+                  classNames={selectClassNames}
+                >
+                  {subjects.map((subject) => (
+                    <SelectItem 
+                      key={subject}
+                      classNames={{
+                        base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
+                      }}
+                    >
+                      {subject}
+                    </SelectItem>
+                  ))}
+                </Select>
+                
+                {previousPrepChecks.length > 0 && (
+                  <Select
+                    label="Update Previous Prep Check (Optional)"
+                    placeholder="Select a previous prep check to update"
+                    selectedKeys={prepCheckForm.previousPrepCheckId ? [prepCheckForm.previousPrepCheckId] : []}
+                    onSelectionChange={(keys) => {
+                      const selected = Array.from(keys)[0] as string | null
+                      setPrepCheckForm({ ...prepCheckForm, previousPrepCheckId: selected === 'none' ? null : (selected || null) })
+                    }}
+                    variant="bordered"
+                    classNames={selectClassNames}
+                  >
+                    <SelectItem 
+                      key="none"
+                      classNames={{
+                        base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
+                      }}
+                    >
+                      New Prep Check
+                    </SelectItem>
+                    {previousPrepChecks.map((check) => (
+                      <SelectItem 
+                        key={check.id}
+                        classNames={{
+                          base: "border-2 border-orange-200 rounded-md px-3 py-1.5 flex-shrink-0 whitespace-nowrap min-h-0 h-auto leading-tight data-[hover=true]:bg-orange-100 data-[hover=true]:border-orange-400 data-[selected=true]:bg-orange-50",
+                        }}
+                      >
+                        {check.subject} - {new Date(check.createdAt).toLocaleDateString()}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                )}
+
+                <Textarea
+                  label="Additional Criteria (Optional)"
+                  placeholder="Specify any additional criteria that should be applied when checking the work (e.g., 'Focus on showing work for calculations', 'Check for evidence in answers')"
+                  value={prepCheckForm.description}
+                  onChange={(e) => {
+                    setPrepCheckForm({ ...prepCheckForm, description: e.target.value })
+                  }}
+                  variant="bordered"
+                  minRows={3}
+                  classNames={inputClassNames}
+                />
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    <PhotoIcon className="w-3.5 h-3.5 inline mr-1 text-orange-600" />
+                    Upload Files - Images or PDFs of your prep work
+                  </label>
+                  <div className="space-y-2">
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/jpg,image/png,image/gif,image/webp,.pdf"
+                      multiple
+                      onChange={(e) => {
+                        const files = Array.from(e.target.files || [])
+                        const MAX_SIZE = 50 * 1024 * 1024 // 50MB
+                        const validFiles: File[] = []
+                        const invalidFiles: string[] = []
+                        
+                        files.forEach((file) => {
+                          if (file.size > MAX_SIZE) {
+                            invalidFiles.push(`${file.name} (${(file.size / (1024 * 1024)).toFixed(1)}MB)`)
+                          } else {
+                            validFiles.push(file)
+                          }
+                        })
+                        
+                        if (validFiles.length > 0) {
+                          setPrepCheckFiles((prev) => {
+                            const combined = [...prev, ...validFiles]
+                            const unique = combined.filter((file, index, self) =>
+                              index === self.findIndex((f) => f.name === file.name && f.size === file.size)
+                            )
+                            return unique
+                          })
+                          // Clear any previous errors when valid files are added
+                          if (invalidFiles.length === 0) {
+                            setError(null)
+                          }
+                        }
+                        
+                        if (invalidFiles.length > 0) {
+                          setError(`Files too large (max 50MB): ${invalidFiles.join(', ')}`)
+                        }
+                        
+                        // Reset the input value to allow selecting the same file again
+                        e.target.value = ''
+                      }}
+                      className="hidden"
+                      id="prep-check-file-input"
+                    />
+                    <label
+                      htmlFor="prep-check-file-input"
+                      className="cursor-pointer inline-flex items-center gap-2 px-4 py-2 border-2 border-orange-200 rounded-lg hover:border-orange-400 transition-colors text-gray-700"
+                    >
+                      <PhotoIcon className="w-4 h-4" />
+                      <span>Choose Files</span>
+                    </label>
+                    {typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const stream = await navigator.mediaDevices.getUserMedia({ video: true })
+                            // For now, we'll use a simple approach: create a video element and capture
+                            // In a real implementation, you might want a more sophisticated camera UI
+                            const video = document.createElement('video')
+                            video.srcObject = stream
+                            video.play()
+                            
+                            // Create a canvas to capture the photo
+                            const canvas = document.createElement('canvas')
+                            const ctx = canvas.getContext('2d')
+                            
+                            video.addEventListener('loadedmetadata', () => {
+                              canvas.width = video.videoWidth
+                              canvas.height = video.videoHeight
+                              ctx?.drawImage(video, 0, 0)
+                              
+                              canvas.toBlob((blob) => {
+                                if (blob) {
+                                  const file = new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg' })
+                                  setPrepCheckFiles((prev) => [...prev, file])
+                                }
+                                stream.getTracks().forEach(track => track.stop())
+                              }, 'image/jpeg', 0.9)
+                            })
+                          } catch (err) {
+                            setError('Failed to access camera. Please ensure camera permissions are granted.')
+                          }
+                        }}
+                        className="inline-flex items-center gap-2 px-4 py-2 border-2 border-cyan-200 rounded-lg hover:border-cyan-400 transition-colors text-gray-700 ml-2"
+                      >
+                        <PhotoIcon className="w-4 h-4" />
+                        <span>Take Photo</span>
+                      </button>
+                    )}
+                  </div>
+                  {prepCheckFiles.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {prepCheckFiles.map((file, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-2 bg-gray-50 rounded border border-gray-200">
+                          <div className="flex items-center gap-2">
+                            <DocumentIcon className="w-4 h-4 text-gray-500" />
+                            <span className="text-sm text-gray-700">{file.name}</span>
+                            <span className="text-xs text-gray-500">
+                              ({(file.size / 1024).toFixed(1)} KB)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPrepCheckFiles(prepCheckFiles.filter((_, i) => i !== idx))
+                            }}
+                            className="text-red-600 hover:text-red-800"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-3 pt-4">
+                  <Button
+                    type="button"
+                    onClick={handleBackToHome}
+                    variant="flat"
+                    className="border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleSubmitPrepCheck}
+                    disabled={
+                      !prepCheckForm.subject?.trim() || 
+                      (prepCheckFiles.length === 0 && !prepCheckForm.description?.trim()) || 
+                      isCheckingPrep
+                    }
+                    className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    isLoading={isCheckingPrep}
+                  >
+                    Check my Prep
+                  </Button>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+      )}
+
+      {/* Prep Check Loading Screen */}
+      {currentPage === 'prep-check' && prepCheckState === 'checking' && (
+        <div className="mb-6">
+          <Card className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-orange-200 rounded-lg">
+            <CardBody className="flex flex-col items-center justify-center py-12">
+              <Logo size="xl" className="mb-4 animate-pulse" />
+              <div className="text-6xl mb-4 animate-spin">⏳</div>
+              <p className="text-xl font-semibold text-orange-800 mb-2">Hang on!</p>
+              <p className="text-gray-600 text-center mb-6">
+                AI is checking your work...
+              </p>
+              <div className="flex space-x-2">
+                <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse"></div>
+                <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
+                <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+      )}
+
+      {/* Prep Check Results Screen */}
+      {currentPage === 'prep-check' && prepCheckState === 'results' && prepCheckResult && (
+        <div className="mb-6">
+          <div className="mb-4">
+            <h2 className="text-2xl font-semibold text-gray-900 mb-1">Prep Check Results</h2>
+            <p className="text-sm text-gray-600">
+              AI feedback on your prep work
+            </p>
+          </div>
+          <Card className="border border-gray-200 shadow-sm bg-white">
+            <CardBody className="p-6">
+              <div className="prose prose-sm max-w-none prose-headings:text-gray-900 prose-h1:text-2xl prose-h1:font-semibold prose-h1:mb-4 prose-h2:text-xl prose-h2:font-semibold prose-h2:mt-6 prose-h2:mb-3 prose-h3:text-lg prose-h3:font-semibold prose-h3:mt-4 prose-h3:mb-2 prose-p:text-gray-800 prose-p:leading-relaxed prose-p:mb-3 prose-ul:list-disc prose-ul:pl-6 prose-ul:mb-4 prose-ul:text-gray-800 prose-li:mb-1 prose-strong:text-gray-900 prose-strong:font-semibold prose-ol:list-decimal prose-ol:pl-6 prose-ol:mb-4 prose-ol:text-gray-800">
+                <ReactMarkdown
+                  components={{
+                    h1: ({node, ...props}) => <h1 className="text-2xl font-semibold text-gray-900 mb-4 mt-6 first:mt-0" {...props} />,
+                    h2: ({node, ...props}) => <h2 className="text-xl font-semibold text-gray-900 mb-3 mt-6 first:mt-0" {...props} />,
+                    h3: ({node, ...props}) => <h3 className="text-lg font-semibold text-gray-900 mb-2 mt-4 first:mt-0" {...props} />,
+                    p: ({node, ...props}) => <p className="text-gray-800 leading-relaxed mb-3" {...props} />,
+                    ul: ({node, ...props}) => <ul className="list-disc pl-6 mb-4 text-gray-800" {...props} />,
+                    ol: ({node, ...props}) => <ol className="list-decimal pl-6 mb-4 text-gray-800" {...props} />,
+                    li: ({node, ...props}) => <li className="mb-1" {...props} />,
+                    strong: ({node, ...props}) => <strong className="font-semibold text-gray-900" {...props} />,
+                    em: ({node, ...props}) => <em className="italic" {...props} />,
+                  }}
+                >
+                  {prepCheckResult}
+                </ReactMarkdown>
+              </div>
+              <div className="mt-6 flex gap-3 justify-end">
+                <Button
+                  onClick={() => {
+                    setPrepCheckForm({
+                      subject: prepCheckForm.subject,
+                      description: prepCheckForm.description,
+                      previousPrepCheckId: prepCheckId,
+                    })
+                    setPrepCheckFiles([])
+                    setPrepCheckResult(null)
+                    setPrepCheckState('config')
+                    loadPreviousPrepChecks()
+                  }}
+                  variant="flat"
+                  className="border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
+                >
+                  Upload Updated Version
+                </Button>
+                <Button
+                  onClick={handleBackToHome}
+                  className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                >
+                  Done
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
         </div>
       )}
 
@@ -1232,7 +1755,7 @@ function App() {
             </div>
           )}
 
-          {isStartingRun || (!question && run) ? (
+          {isStartingRun || (!question && run && totalQuestions === 0) ? (
             // Loading screen before test starts
             <Card className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-orange-200 rounded-lg">
               <CardBody className="flex flex-col items-center justify-center py-12">
@@ -1283,7 +1806,18 @@ function App() {
                             </div>
                           </div>
                         )}
-                        <h3 className="text-2xl font-semibold text-gray-900 mb-3">Question</h3>
+                        <div className="flex items-start justify-between mb-3">
+                          <h3 className="text-2xl font-semibold text-gray-900">Question</h3>
+                          <Button
+                            size="sm"
+                            variant="flat"
+                            className="flex-shrink-0 border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
+                            startContent={<FlagIcon className="w-4 h-4" />}
+                            onPress={() => setFlagModal({isOpen: true, questionId: question.id})}
+                          >
+                            Flag
+                          </Button>
+                        </div>
                         <p className="text-gray-800 text-base leading-relaxed">{question.text}</p>
                       </CardBody>
                     </Card>
@@ -1465,14 +1999,14 @@ function App() {
                     )}
                   </div>
                 ) : totalQuestions > 0 ? (
-                  // Animation screen when all questions are completed
-                  <Card className="bg-gradient-to-r from-orange-50 to-yellow-50 border-2 border-orange-200 rounded-lg">
+                  // Loading screen while summarizing results
+                  <Card className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-orange-200 rounded-lg">
                     <CardBody className="flex flex-col items-center justify-center py-12">
-                      <Logo size="xl" className="mb-4 animate-bounce" />
-                      <div className="text-6xl mb-4 animate-bounce">🎉</div>
-                      <p className="text-xl font-semibold text-orange-800 mb-2">Great job!</p>
+                      <Logo size="xl" className="mb-4 animate-pulse" />
+                      <div className="text-6xl mb-4 animate-spin">⏳</div>
+                      <p className="text-xl font-semibold text-orange-800 mb-2">Hang on!</p>
                       <p className="text-gray-600 text-center mb-6">
-                        You've completed all the questions. Loading your summary...
+                        We're summarizing results...
                       </p>
                       <div className="flex space-x-2">
                         <div className="w-3 h-3 bg-orange-500 rounded-full animate-pulse"></div>
@@ -1500,6 +2034,62 @@ function App() {
                   </Card>
                 )}
           </div>
+      )}
+
+      {/* Flag Question Modal - shown when flagging a question */}
+      {flagModal.isOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setFlagModal({isOpen: false, questionId: null})}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-semibold text-gray-900">Flag Question</h3>
+                <button
+                  onClick={() => setFlagModal({isOpen: false, questionId: null})}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-gray-600 mb-4">Why are you flagging this question?</p>
+              <div className="space-y-2">
+                {['incorrect', 'not on topic', "haven't studied material", 'poorly formulated'].map((flagType) => (
+                  <button
+                    key={flagType}
+                    onClick={async () => {
+                      if (!run || !flagModal.questionId) return
+                      setIsSubmittingFlag(true)
+                      try {
+                        const token = await getToken()
+                        await flagQuestion(run.id, flagModal.questionId, flagType, token)
+                        setFlagModal({isOpen: false, questionId: null})
+                        // Show success message briefly
+                        setError(null)
+                      } catch (err: any) {
+                        setError(err.message ?? 'Failed to flag question')
+                      } finally {
+                        setIsSubmittingFlag(false)
+                      }
+                    }}
+                    disabled={isSubmittingFlag}
+                    className="w-full text-left p-3 rounded-lg border-2 border-gray-200 hover:border-orange-300 hover:bg-orange-50 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <span className="text-gray-800 capitalize">{flagType}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-4 flex justify-end">
+                <Button
+                  size="sm"
+                  variant="flat"
+                  onPress={() => setFlagModal({isOpen: false, questionId: null})}
+                  className="border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Summary page - shown when viewing from completed revisions or after finishing a run */}

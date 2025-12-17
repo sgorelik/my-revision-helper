@@ -136,6 +136,7 @@ def fetch_prompt(
         # Fetch prompt from Langfuse
         # Try without label first (most common), then with label if that fails
         prompt_obj = None
+        subject_specific_failed = False
         try:
             if version:
                 prompt_obj = client.get_prompt(prompt_to_fetch, version=version)
@@ -151,7 +152,9 @@ def fetch_prompt(
                     prompt_obj = client.get_prompt(prompt_to_fetch, label=env)
             except Exception as e2:
                 logger.warning(f"Failed to fetch prompt '{prompt_to_fetch}' with label '{env}': {e2}")
-                raise e2
+                subject_specific_failed = True
+                prompt_obj = None  # Ensure prompt_obj is None so fallback logic runs
+                # Don't raise - allow fallback to base prompt if subject was provided
         
         if prompt_obj:
             # Extract the prompt string from the Prompt object
@@ -177,7 +180,7 @@ def fetch_prompt(
             }
         else:
             # If subject-specific prompt not found and subject was provided, try base prompt
-            if subject and prompt_to_fetch != prompt_name:
+            if subject and (prompt_to_fetch != prompt_name or subject_specific_failed):
                 logger.info(f"Subject-specific prompt '{prompt_to_fetch}' not found, trying base prompt '{prompt_name}'")
                 try:
                     # Try without label first, then with label if that fails
@@ -197,7 +200,7 @@ def fetch_prompt(
                                 prompt_obj = client.get_prompt(prompt_name, label=env)
                         except Exception as e2:
                             logger.warning(f"Failed to fetch base prompt '{prompt_name}' with label '{env}': {e2}")
-                            raise e2
+                            # Don't raise - allow function to return None so default prompt can be used
                     
                     if prompt_obj:
                         if hasattr(prompt_obj, 'prompt') and prompt_obj.prompt:
@@ -383,4 +386,54 @@ def create_generation(
         import traceback
         traceback.print_exc()
         return None
+
+
+def add_feedback_to_trace(
+    trace_id: str,
+    score: Optional[float] = None,
+    comment: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Add feedback/score to a Langfuse trace.
+    
+    Args:
+        trace_id: Langfuse trace ID
+        score: Optional score (0-1 or -1 to 1 depending on Langfuse config)
+        comment: Optional comment/feedback text
+        metadata: Optional metadata dictionary
+    
+    Returns:
+        True if feedback was added successfully, False otherwise
+    """
+    client = get_langfuse()
+    if not client:
+        logger.warning("Langfuse not available - cannot add feedback")
+        return False
+    
+    try:
+        # Langfuse SDK allows adding scores via score() method on trace
+        # We need to fetch the trace first, but since we don't store trace IDs,
+        # we'll use the client's score method directly with trace_id
+        # Note: This requires the trace to exist and be accessible
+        
+        # Try to use the client's score method if available
+        if hasattr(client, 'score'):
+            client.score(
+                trace_id=trace_id,
+                score=score,
+                comment=comment,
+                metadata=metadata or {},
+            )
+            logger.info(f"Added feedback to trace {trace_id}: score={score}, comment={comment}")
+            client.flush()
+            return True
+        else:
+            # Fallback: try to use the trace object's score method
+            # This would require fetching the trace, which we can't do without storing trace IDs
+            logger.warning("Langfuse client does not support direct scoring - trace ID must be stored")
+            return False
+    except Exception as e:
+        logger.error(f"Failed to add feedback to trace {trace_id}: {e}", exc_info=True)
+        return False
 

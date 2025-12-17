@@ -105,3 +105,40 @@ class RunAnswer(Base):
     run = relationship("RevisionRun", back_populates="answers")
     question = relationship("RunQuestion")
 
+
+class QuestionFlag(Base):
+    """User flags for questions - feedback on question quality."""
+    __tablename__ = "question_flags"
+    
+    id = Column(String, primary_key=True)
+    run_id = Column(String, ForeignKey("revision_runs.id"), nullable=False)
+    question_id = Column(String, ForeignKey("run_questions.id"), nullable=False)
+    flag_type = Column(String, nullable=False)  # 'incorrect', 'not on topic', "haven't studied material", 'poorly formulated'
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)  # Nullable for anonymous users
+    session_id = Column(String, nullable=True)  # For anonymous users
+    langfuse_trace_id = Column(String, nullable=True)  # Associated Langfuse trace ID
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    run = relationship("RevisionRun")
+    question = relationship("RunQuestion")
+
+
+class PrepCheck(Base):
+    """Prep check submissions and AI feedback."""
+    __tablename__ = "prep_checks"
+    
+    id = Column(String, primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)  # Nullable for anonymous users
+    session_id = Column(String, nullable=True)  # For anonymous users
+    previous_prep_check_id = Column(String, ForeignKey("prep_checks.id"), nullable=True)  # Link to previous version
+    subject = Column(String, nullable=False)
+    description = Column(Text)  # Optional additional criteria
+    prep_work_text = Column(Text, nullable=False)  # Combined text from files and description
+    uploaded_files = Column(JSON)  # List of filenames
+    feedback = Column(Text, nullable=False)  # AI-generated feedback
+    langfuse_trace_id = Column(String, nullable=True)  # Associated Langfuse trace ID
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    user = relationship("User")
+    previous_prep_check = relationship("PrepCheck", remote_side=[id], backref="updated_versions")
+

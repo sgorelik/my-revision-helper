@@ -8,7 +8,7 @@ access their data within the current session.
 
 from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
-from .models_db import User, Revision, RevisionRun, RunQuestion, RunAnswer
+from .models_db import User, Revision, RevisionRun, RunQuestion, RunAnswer, QuestionFlag, PrepCheck
 import uuid
 import logging
 
@@ -452,6 +452,162 @@ class StorageAdapter:
         else:
             # In-memory storage
             return self._answers.get(run_id, [])
+    
+    def store_question_flag(
+        self,
+        run_id: str,
+        question_id: str,
+        flag_type: str,
+        langfuse_trace_id: Optional[str] = None,
+    ) -> str:
+        """
+        Store a flag for a question.
+        
+        Args:
+            run_id: Run ID
+            question_id: Question ID
+            flag_type: Type of flag ('incorrect', 'not on topic', "haven't studied material", 'poorly formulated')
+            langfuse_trace_id: Optional Langfuse trace ID to associate with the flag
+        
+        Returns:
+            Flag ID
+        """
+        flag_id = str(uuid.uuid4())
+        
+        if self.use_database and self.db:
+            user_id = self.user.get("user_id") if self.user else None
+            flag = QuestionFlag(
+                id=flag_id,
+                run_id=run_id,
+                question_id=question_id,
+                flag_type=flag_type,
+                user_id=user_id,
+                session_id=self.session_id if not user_id else None,
+                langfuse_trace_id=langfuse_trace_id,
+            )
+            self.db.add(flag)
+            self.db.commit()
+            self.db.refresh(flag)
+            logger.info(f"Stored question flag: {flag_id} for question {question_id} in run {run_id}")
+        else:
+            # In-memory storage (shouldn't happen in production, but handle gracefully)
+            logger.warning("Database not available - flag not persisted")
+        
+        return flag_id
+    
+    def store_prep_check(
+        self,
+        subject: str,
+        description: Optional[str],
+        prep_work_text: str,
+        uploaded_files: List[str],
+        feedback: str,
+        langfuse_trace_id: Optional[str] = None,
+        previous_prep_check_id: Optional[str] = None,
+    ) -> str:
+        """
+        Store a prep check submission and its AI feedback.
+        
+        Args:
+            subject: Subject area
+            description: Optional additional criteria
+            prep_work_text: Combined text from files and description
+            uploaded_files: List of uploaded filenames
+            feedback: AI-generated feedback
+            langfuse_trace_id: Optional Langfuse trace ID
+            previous_prep_check_id: Optional ID of previous prep check this is an update to
+        
+        Returns:
+            Prep check ID
+        """
+        prep_check_id = str(uuid.uuid4())
+        
+        if self.use_database and self.db:
+            user_id = self.user.get("user_id") if self.user else None
+            
+            # Verify previous prep check exists and user has access
+            if previous_prep_check_id:
+                previous_check = self.get_prep_check(previous_prep_check_id)
+                if not previous_check:
+                    logger.warning(f"Previous prep check {previous_prep_check_id} not found or access denied")
+                    previous_prep_check_id = None  # Don't link if can't verify access
+            
+            prep_check = PrepCheck(
+                id=prep_check_id,
+                user_id=user_id,
+                session_id=self.session_id if not user_id else None,
+                previous_prep_check_id=previous_prep_check_id,
+                subject=subject,
+                description=description,
+                prep_work_text=prep_work_text,
+                uploaded_files=uploaded_files,
+                feedback=feedback,
+                langfuse_trace_id=langfuse_trace_id,
+            )
+            self.db.add(prep_check)
+            self.db.commit()
+            self.db.refresh(prep_check)
+            logger.info(f"Stored prep check: {prep_check_id} for subject {subject}")
+        else:
+            # In-memory storage (shouldn't happen in production, but handle gracefully)
+            logger.warning("Database not available - prep check not persisted")
+        
+        return prep_check_id
+    
+    def list_prep_checks(self) -> List[dict]:
+        """List all prep checks for this user/session."""
+        if self.use_database:
+            # Get all prep checks for this user/session
+            if self.is_authenticated:
+                prep_checks = self.db.query(PrepCheck).filter(
+                    PrepCheck.user_id == self.user["user_id"]
+                ).order_by(PrepCheck.created_at.desc()).all()
+            else:
+                prep_checks = self.db.query(PrepCheck).filter(
+                    PrepCheck.session_id == self.session_id
+                ).order_by(PrepCheck.created_at.desc()).all()
+            
+            return [{
+                "id": pc.id,
+                "subject": pc.subject,
+                "description": pc.description,
+                "uploadedFiles": pc.uploaded_files or [],
+                "feedback": pc.feedback,
+                "previousPrepCheckId": pc.previous_prep_check_id,
+                "createdAt": pc.created_at.isoformat(),
+            } for pc in prep_checks]
+        else:
+            # In-memory storage
+            return []
+    
+    def get_prep_check(self, prep_check_id: str) -> Optional[dict]:
+        """Get a specific prep check by ID."""
+        if self.use_database:
+            prep_check = self.db.query(PrepCheck).filter(PrepCheck.id == prep_check_id).first()
+            if not prep_check:
+                return None
+            
+            # Check access (user_id or session_id must match)
+            if self.is_authenticated:
+                if prep_check.user_id != self.user["user_id"]:
+                    return None
+            else:
+                if prep_check.session_id != self.session_id:
+                    return None
+            
+            return {
+                "id": prep_check.id,
+                "subject": prep_check.subject,
+                "description": prep_check.description,
+                "prepWorkText": prep_check.prep_work_text,
+                "uploadedFiles": prep_check.uploaded_files or [],
+                "feedback": prep_check.feedback,
+                "previousPrepCheckId": prep_check.previous_prep_check_id,
+                "createdAt": prep_check.created_at.isoformat(),
+            }
+        else:
+            # In-memory storage
+            return None
     
     def list_completed_runs(self) -> List[dict]:
         """List all completed runs with revision info and summary data."""

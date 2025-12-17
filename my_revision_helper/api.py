@@ -50,6 +50,8 @@ from .langfuse_client import (
     create_trace,
     create_generation,
     get_langfuse_environment,
+    add_feedback_to_trace,
+    get_langfuse,
 )
 
 # Load environment variables from .env file
@@ -161,6 +163,12 @@ class CompletedRun(BaseModel):
     score: float
     totalQuestions: int
     threshold: int
+
+
+class FlagRequest(BaseModel):
+    """Request payload for flagging a question."""
+
+    flagType: str  # 'incorrect', 'not on topic', "haven't studied material", 'poorly formulated'
 
 
 # ---------- FastAPI app setup ----------
@@ -290,6 +298,42 @@ def get_ai_context() -> str:
             "Provide clear, educational feedback. "
             "Questions should be appropriate for students and test understanding of key concepts. "
             "When marking, be fair but thorough - partial credit may be appropriate for partially correct answers."
+        ),
+    )
+    return context
+
+
+def get_prep_check_context() -> str:
+    """
+    Get general context/instructions specifically for prep checking.
+    This is separate from the revision helper general context because prep checking
+    has different requirements (e.g., never reveal correct answers).
+    
+    Tries to fetch from Langfuse first, then falls back to PREP_CHECK_CONTEXT env var or default.
+    """
+    # Try to fetch from Langfuse first
+    langfuse_prompt_data = fetch_prompt("general-context-prep-check")
+    if langfuse_prompt_data and langfuse_prompt_data.get("prompt"):
+        context = langfuse_prompt_data["prompt"]
+        logger.info("Using general-context-prep-check prompt from Langfuse")
+        return context
+    
+    # Fallback to environment variable or default
+    context = os.getenv(
+        "PREP_CHECK_CONTEXT",
+        (
+            "You are a helpful AI tutor reviewing student prep work. "
+            "CRITICAL RULES:\n"
+            "- NEVER provide correct answers or solutions\n"
+            "- NEVER give away the answer to a question\n"
+            "- You can identify that an answer is wrong, but you must NOT tell them what the right answer is\n"
+            "- Focus on process, methodology, and improvement areas\n\n"
+            "Your role is to:\n"
+            "- Identify areas that need improvement\n"
+            "- Point out specific errors (calculation, spelling, grammar, etc.)\n"
+            "- Reiterate rubrics and requirements\n"
+            "- Guide students toward finding the answer themselves\n"
+            "- Encourage showing work and providing evidence"
         ),
     )
     return context
@@ -1660,8 +1704,307 @@ else:
     async def serve_frontend_fallback(full_path: str):
         if full_path.startswith("api/"):
             return {"error": "Not found"}
-        return {
-            "error": "Frontend not built",
-            "details": f"Frontend build directory not found at {frontend_build_path}",
-            "message": "Please ensure the frontend is built during deployment (npm run build in frontend/)"
-        }
+            return {
+                "error": "Frontend not built",
+                "details": f"Frontend build directory not found at {frontend_build_path}",
+                "message": "Please ensure the frontend is built during deployment (npm run build in frontend/)"
+            }
+
+
+@app.post("/api/runs/{run_id}/questions/{question_id}/flag")
+async def flag_question(
+    run_id: str,
+    question_id: str,
+    payload: FlagRequest,
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+):
+    """
+    Flag a question with feedback.
+    
+    Valid flag types:
+    - 'incorrect': Question has incorrect answer or information
+    - 'not on topic': Question is not relevant to the revision topic
+    - "haven't studied material": Student hasn't studied the material yet
+    - 'poorly formulated': Question is unclear or poorly worded
+    
+    The flag is stored in the database and associated with the Langfuse trace
+    if the trace can be found.
+    """
+    from fastapi import HTTPException
+    
+    # Validate flag type
+    valid_flag_types = ['incorrect', 'not on topic', "haven't studied material", 'poorly formulated']
+    if payload.flagType not in valid_flag_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid flag type. Must be one of: {', '.join(valid_flag_types)}"
+        )
+    
+    storage = StorageAdapter(user, db, session_id)
+    
+    # Verify run access
+    run = storage.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found or access denied")
+    
+    # Verify question exists in this run
+    questions = storage.get_questions(run_id)
+    question = next((q for q in questions if q.get("id") == question_id), None)
+    if not question:
+        raise HTTPException(status_code=404, detail=f"Question {question_id} not found in run {run_id}")
+    
+    # Try to find the Langfuse trace for this question
+    # We'll search by metadata (run_id, question_id) since we don't store trace IDs
+    langfuse_trace_id = None
+    langfuse_client = get_langfuse()
+    
+    if langfuse_client:
+        try:
+            # Map flag type to a score for Langfuse
+            # Lower scores indicate problems with the question
+            flag_score_map = {
+                'incorrect': 0.0,  # Very bad - incorrect question
+                'not on topic': 0.3,  # Bad - not relevant
+                "haven't studied material": None,  # Not a quality issue, just user state
+                'poorly formulated': 0.5,  # Medium - unclear but might be fixable
+            }
+            
+            score = flag_score_map.get(payload.flagType)
+            comment = f"Flagged as: {payload.flagType}"
+            
+            # Note: Without storing trace IDs, we can't directly add feedback to the trace
+            # However, we can store the flag in the database with metadata that can be used
+            # to query Langfuse later via the API or UI
+            # For now, we'll store the flag and log it
+            logger.info(
+                f"Question flagged: run_id={run_id}, question_id={question_id}, "
+                f"flag_type={payload.flagType}, user_id={user.get('user_id') if user else None}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to process Langfuse feedback: {e}")
+    
+    # Store the flag in the database
+    flag_id = storage.store_question_flag(
+        run_id=run_id,
+        question_id=question_id,
+        flag_type=payload.flagType,
+        langfuse_trace_id=langfuse_trace_id,
+    )
+    
+    return {
+        "flagId": flag_id,
+        "questionId": question_id,
+        "runId": run_id,
+        "flagType": payload.flagType,
+        "message": "Question flagged successfully",
+    }
+
+
+class PrepCheckResponse(BaseModel):
+    """Response from prep check endpoint."""
+    feedback: str
+
+
+@app.post("/api/prep-check", response_model=PrepCheckResponse)
+async def check_prep(
+    subject: str = Form(...),
+    description: str = Form(""),
+    files: List[UploadFile] = File(default_factory=list),
+    previousPrepCheckId: Optional[str] = Form(None),  # Optional: link to previous version
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+):
+    """
+    Check prep work quality using AI.
+    
+    This endpoint:
+    1. Processes uploaded image/PDF files to extract text using OCR
+    2. Combines extracted text with optional description
+    3. Uses AI to analyze the prep work and provide feedback
+    4. Returns feedback that identifies issues without revealing correct answers
+    5. Stores the prep check and feedback for later access
+    
+    Important: The AI should NEVER provide correct answers. It should:
+    - Identify answers that need more work or are incorrect
+    - Reiterate rubrics (e.g., "provide evidence")
+    - Identify specific issues: calculation errors, spelling, grammar, lack of specificity,
+      not showing work, illegible content, etc.
+    
+    Args:
+        subject: Subject area (e.g., "Mathematics", "History")
+        description: Optional additional criteria for checking
+        files: Uploaded image/PDF files of prep work
+        previousPrepCheckId: Optional ID of a previous prep check - if provided, this will be
+                            linked as an updated version of that prep check
+    
+    Returns:
+        PrepCheckResponse with AI feedback and prep check ID
+    """
+    from fastapi import HTTPException
+    
+    if not OpenAI:
+        raise HTTPException(status_code=503, detail="OpenAI API not configured")
+    
+    # Validate that we have either files or description
+    if not files and not description:
+        raise HTTPException(
+            status_code=400,
+            detail="Please provide either uploaded files or a description of the prep work"
+        )
+    
+    try:
+        # Process uploaded files to extract text
+        # Use the same file processing function as revision creation
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        extracted_texts = await process_uploaded_files(files, client)
+        
+        combined_text = description or ""
+        if extracted_texts:
+            for filename, text in extracted_texts.items():
+                if text:
+                    combined_text += f"\n\n--- Content from {filename} ---\n{text}"
+        
+        if not combined_text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="No text could be extracted from the provided files. Please ensure files contain readable text."
+            )
+        
+        # Get user ID for tracing
+        user_id = user.get("user_id") if user else None
+        
+        # Create Langfuse trace
+        trace = create_trace(
+            name="prep-check",
+            user_id=user_id,
+            metadata={
+                "subject": subject,
+                "has_description": bool(description),
+                "file_count": len(files),
+                "file_names": [f.filename for f in files] if files else [],
+            },
+        )
+        
+        # Get prep-check specific general context (separate from revision helper context)
+        langfuse_client = get_langfuse()
+        general_context = get_prep_check_context()
+        
+        # Try to fetch prep-check prompt from Langfuse (subject-specific first, then generic)
+        langfuse_prompt_data = fetch_prompt("prep-check", subject=subject)
+        
+        # Default prompt if Langfuse is unavailable
+        default_prompt = """{general_context}
+
+You are a helpful AI tutor reviewing a student's prep work. Your role is to provide constructive feedback WITHOUT revealing correct answers.
+
+Review the following prep work and provide feedback that:
+1. Identifies answers that need more work or are incorrect (but DO NOT provide the correct answer)
+2. Reiterates rubrics and requirements (e.g., "provide evidence", "show your work", "be more specific")
+3. Identifies specific issues such as:
+   - Calculation errors (but don't give the correct calculation)
+   - Spelling errors
+   - Grammatical errors
+   - Lack of specificity
+   - Not showing work/steps
+   - Illegible or unclear content
+   - Missing required elements
+
+Subject: {subject}
+{additional_criteria}
+
+Prep work to review:
+{prep_work}
+
+Provide your feedback:"""
+        
+        # Use Langfuse prompt if available, otherwise use default
+        if langfuse_prompt_data:
+            prompt_template = langfuse_prompt_data["prompt"]
+            logger.info("Using Langfuse prompt for prep-check")
+        else:
+            prompt_template = default_prompt
+            logger.info("Using default prompt for prep-check (Langfuse not available or prompt not found)")
+        
+        # Render prompt with variables
+        prompt = render_prompt(
+            prompt_template,
+            {
+                "general_context": general_context,
+                "subject": subject,
+                "additional_criteria": f"Additional criteria: {description}" if description else "",
+                "prep_work": combined_text,
+            }
+        )
+        
+        # Call OpenAI
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        
+        messages = [
+            {"role": "system", "content": "You are a helpful AI tutor that provides constructive feedback on student prep work without revealing correct answers."},
+            {"role": "user", "content": prompt}
+        ]
+        
+        logger.info(f"Calling OpenAI for prep check (model: {model}, subject: {subject})")
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2000,
+        )
+        
+        feedback = response.choices[0].message.content or "No feedback generated."
+        
+        # Get trace ID for storage (if available)
+        langfuse_trace_id = None
+        if trace and hasattr(trace, 'id'):
+            try:
+                langfuse_trace_id = str(trace.id)
+            except Exception:
+                pass
+        
+        # Log to Langfuse
+        if trace:
+            create_generation(
+                trace=trace,
+                name="prep-check-generation",
+                model=model,
+                input_data={"messages": messages},
+                output=feedback,
+                metadata={
+                    "subject": subject,
+                    "has_description": bool(description),
+                    "file_count": len(files),
+                },
+            )
+            trace.end()
+            if langfuse_client:
+                langfuse_client.flush()
+        
+        # Store prep check in database
+        storage = StorageAdapter(user, db, session_id)
+        uploaded_file_names = [f.filename for f in files] if files else []
+        prep_check_id = storage.store_prep_check(
+            subject=subject,
+            description=description if description else None,
+            prep_work_text=combined_text,
+            uploaded_files=uploaded_file_names,
+            feedback=feedback,
+            langfuse_trace_id=langfuse_trace_id,
+        )
+        
+        logger.info(f"Prep check completed successfully (subject: {subject}, feedback length: {len(feedback)}, id: {prep_check_id})")
+        
+        return PrepCheckResponse(feedback=feedback, prepCheckId=prep_check_id)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking prep work: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check prep work: {str(e)}"
+        )
