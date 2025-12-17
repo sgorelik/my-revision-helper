@@ -52,21 +52,37 @@ EXPOSE 8000
 
 # Create startup script that runs migrations then starts server
 RUN echo '#!/bin/sh\n\
-echo "🔄 Running database migrations..."\n\
+set -e\n\
+echo "========================================"\n\
+echo "🚀 Starting My Revision Helper"\n\
+echo "========================================"\n\
 if [ -n "$DATABASE_URL" ]; then\n\
-  echo "Step 1: Running migration scripts..."\n\
+  echo ""\n\
+  echo "📊 Database detected - running migrations..."\n\
+  echo "Step 1: Ensuring critical columns exist..."\n\
+  if python ensure_migrations.py; then\n\
+    echo "✅ Critical columns verified"\n\
+  else\n\
+    echo "❌ Failed to ensure critical columns - this is critical!"\n\
+    echo "   Server will start anyway, but errors may occur"\n\
+  fi\n\
+  echo ""\n\
+  echo "Step 2: Running full migration scripts..."\n\
   python run_migrations.py || {\n\
     MIGRATION_EXIT=$?\n\
-    echo "⚠️  Migrations failed with exit code $MIGRATION_EXIT"\n\
-    echo "   Attempting to ensure critical columns exist..."\n\
-    python ensure_migrations.py || echo "   Column check also failed"\n\
+    echo "⚠️  Full migrations failed with exit code $MIGRATION_EXIT"\n\
+    echo "   Critical columns should still be in place from Step 1"\n\
   }\n\
-  echo "Step 2: Verifying critical columns exist..."\n\
-  python ensure_migrations.py || echo "⚠️  Some columns may still be missing"\n\
+  echo ""\n\
+  echo "Step 3: Final verification..."\n\
+  python ensure_migrations.py || echo "⚠️  Final verification failed"\n\
 else\n\
   echo "⚠️  DATABASE_URL not set - skipping migrations"\n\
 fi\n\
+echo ""\n\
+echo "========================================"\n\
 echo "🚀 Starting server..."\n\
+echo "========================================"\n\
 exec uvicorn my_revision_helper.api:app --host 0.0.0.0 --port ${PORT:-8000}\n\
 ' > /app/start.sh && chmod +x /app/start.sh
 

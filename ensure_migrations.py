@@ -34,13 +34,19 @@ def ensure_column_exists(engine, table_name: str, column_name: str, column_def: 
     print(f"⚠️  Column {table_name}.{column_name} is missing - adding it...")
     
     try:
-        with engine.connect() as conn:
+        with engine.begin() as conn:  # Use begin() for automatic transaction management
             conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_def}"))
-            conn.commit()
         print(f"✅ Added {table_name}.{column_name}")
         return True
     except Exception as e:
+        # Check if column was added by another process
+        columns_after = [col['name'] for col in inspector.get_columns(table_name)]
+        if column_name in columns_after:
+            print(f"✅ Column {table_name}.{column_name} exists now (may have been added concurrently)")
+            return True
         print(f"❌ Failed to add {table_name}.{column_name}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def main():
