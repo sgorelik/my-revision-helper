@@ -418,6 +418,7 @@ def test_anonymous_revision_persisted_with_session_id():
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_list_completed_runs():
     """
     Test the /api/runs/completed endpoint.
