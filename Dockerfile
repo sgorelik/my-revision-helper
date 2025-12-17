@@ -41,11 +41,30 @@ COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 # Copy application code
 COPY my_revision_helper ./my_revision_helper
 
+# Copy migration scripts
+COPY migrate_*.py ./
+COPY run_migrations.py ./
+
 # Expose port (Railway sets PORT env var)
 ENV PORT=8000
 EXPOSE 8000
 
-# Start the server (use shell form to expand $PORT)
-# Railway will set PORT as an environment variable at runtime
-CMD ["sh", "-c", "uvicorn my_revision_helper.api:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Create startup script that runs migrations then starts server
+RUN echo '#!/bin/sh\n\
+set -e\n\
+echo "🔄 Running database migrations..."\n\
+if [ -n "$DATABASE_URL" ]; then\n\
+  python run_migrations.py || {\n\
+    echo "⚠️  Migrations failed - check logs above"\n\
+    echo "   Continuing with server startup anyway..."\n\
+  }\n\
+else\n\
+  echo "⚠️  DATABASE_URL not set - skipping migrations"\n\
+fi\n\
+echo "🚀 Starting server..."\n\
+exec uvicorn my_revision_helper.api:app --host 0.0.0.0 --port ${PORT:-8000}\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
+# Start the server (runs migrations first)
+CMD ["/app/start.sh"]
 
