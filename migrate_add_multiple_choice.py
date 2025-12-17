@@ -25,8 +25,8 @@ load_dotenv()
 # Add project root to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from sqlalchemy import text, inspect
-from my_revision_helper.database import get_db, engine
+from sqlalchemy import text, inspect, create_engine
+from my_revision_helper.database import get_db, engine, DATABASE_URL
 
 def migrate():
     """Add multiple choice columns to database tables."""
@@ -35,20 +35,53 @@ def migrate():
     print("=" * 70)
     print()
     
+    # Ensure we have a database connection
+    if not DATABASE_URL:
+        print("❌ DATABASE_URL not set. Cannot run migration.")
+        raise Exception("DATABASE_URL not set")
+    
+    # Use the engine from database module, or create a new one if needed
+    migration_engine = engine
+    if not migration_engine:
+        print("Creating database engine for migration...")
+        migration_engine = create_engine(DATABASE_URL)
+    
     db = next(get_db())
     
     try:
         # Check if columns already exist
-        inspector = inspect(engine)
-        revision_columns = [col['name'] for col in inspector.get_columns('revisions')]
-        question_columns = [col['name'] for col in inspector.get_columns('run_questions')]
+        inspector = inspect(migration_engine)
+        
+        # Check if tables exist first
+        if not inspector.has_table('revisions'):
+            print("⚠️  revisions table does not exist. Skipping question_style migration for revisions.")
+            revision_columns = []
+        else:
+            revision_columns = [col['name'] for col in inspector.get_columns('revisions')]
+        
+        if not inspector.has_table('run_questions'):
+            print("⚠️  run_questions table does not exist. Skipping multiple choice migration for run_questions.")
+            question_columns = []
+        else:
+            question_columns = [col['name'] for col in inspector.get_columns('run_questions')]
         
         # Add question_style to revisions table
         if 'question_style' not in revision_columns:
             print("Adding question_style column to revisions table...")
-            db.execute(text("ALTER TABLE revisions ADD COLUMN question_style VARCHAR DEFAULT 'free-text'"))
-            db.commit()
-            print("✓ Added question_style to revisions")
+            try:
+                db.execute(text("ALTER TABLE revisions ADD COLUMN question_style VARCHAR DEFAULT 'free-text'"))
+                db.commit()
+                print("✓ Added question_style to revisions")
+            except Exception as e:
+                db.rollback()
+                print(f"⚠️  Error adding question_style to revisions: {e}")
+                print("   This might be OK if the column already exists")
+                # Check again after error
+                revision_columns = [col['name'] for col in inspector.get_columns('revisions')]
+                if 'question_style' in revision_columns:
+                    print("   Column exists now - continuing")
+                else:
+                    raise
         else:
             print("ℹ question_style column already exists in revisions table")
         

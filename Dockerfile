@@ -51,13 +51,16 @@ EXPOSE 8000
 
 # Create startup script that runs migrations then starts server
 RUN echo '#!/bin/sh\n\
-set -e\n\
 echo "🔄 Running database migrations..."\n\
 if [ -n "$DATABASE_URL" ]; then\n\
-  python run_migrations.py || {\n\
-    echo "⚠️  Migrations failed - check logs above"\n\
+  if python run_migrations.py; then\n\
+    echo "✅ Migrations completed successfully"\n\
+  else\n\
+    MIGRATION_EXIT=$?\n\
+    echo "⚠️  Migrations failed with exit code $MIGRATION_EXIT"\n\
+    echo "   Check logs above for details"\n\
     echo "   Continuing with server startup anyway..."\n\
-  }\n\
+  fi\n\
 else\n\
   echo "⚠️  DATABASE_URL not set - skipping migrations"\n\
 fi\n\

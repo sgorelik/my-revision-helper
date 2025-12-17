@@ -51,15 +51,19 @@ def run_migration(migration_file: str) -> bool:
             cwd=SCRIPT_DIR,
             check=True,
             capture_output=False,
-            text=True
+            text=True,
+            env=os.environ.copy()  # Pass environment variables to subprocess
         )
         print(f"✅ {migration_file} completed successfully")
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ {migration_file} failed with exit code {e.returncode}")
+        print(f"   Check the output above for error details")
         return False
     except Exception as e:
         print(f"❌ Error running {migration_file}: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def main():
