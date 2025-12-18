@@ -29,6 +29,7 @@ def ensure_column_exists(engine, table_name: str, column_name: str, column_def: 
     columns = [col['name'] for col in inspector.get_columns(table_name)]
     
     if column_name in columns:
+        print(f"✅ Column {table_name}.{column_name} already exists")
         return True  # Column exists
     
     print(f"⚠️  Column {table_name}.{column_name} is missing - adding it...")
@@ -36,10 +37,19 @@ def ensure_column_exists(engine, table_name: str, column_name: str, column_def: 
     try:
         with engine.begin() as conn:  # Use begin() for automatic transaction management
             conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_def}"))
-        print(f"✅ Added {table_name}.{column_name}")
-        return True
+        
+        # Verify it was added
+        inspector = inspect(engine)
+        columns_after = [col['name'] for col in inspector.get_columns(table_name)]
+        if column_name in columns_after:
+            print(f"✅ Successfully added {table_name}.{column_name}")
+            return True
+        else:
+            print(f"❌ Column {table_name}.{column_name} was not added (verification failed)")
+            return False
     except Exception as e:
         # Check if column was added by another process
+        inspector = inspect(engine)
         columns_after = [col['name'] for col in inspector.get_columns(table_name)]
         if column_name in columns_after:
             print(f"✅ Column {table_name}.{column_name} exists now (may have been added concurrently)")
@@ -74,11 +84,15 @@ def main():
     print("\n" + "="*70)
     if all_good:
         print("✅ All critical columns exist")
+        print("="*70)
+        sys.exit(0)
     else:
-        print("⚠️  Some columns may be missing - check errors above")
-    print("="*70)
-    
-    sys.exit(0 if all_good else 1)
+        print("❌ CRITICAL: Some columns are missing!")
+        print("   The server may fail to start or operate correctly.")
+        print("   Check errors above for details.")
+        print("="*70)
+        print("\n⚠️  Exiting with error code to prevent server startup with broken schema")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

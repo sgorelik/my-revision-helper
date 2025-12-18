@@ -59,23 +59,31 @@ echo "========================================"\n\
 if [ -n "$DATABASE_URL" ]; then\n\
   echo ""\n\
   echo "📊 Database detected - running migrations..."\n\
-  echo "Step 1: Ensuring critical columns exist..."\n\
-  if python ensure_migrations.py; then\n\
-    echo "✅ Critical columns verified"\n\
-  else\n\
-    echo "❌ Failed to ensure critical columns - this is critical!"\n\
-    echo "   Server will start anyway, but errors may occur"\n\
+  echo ""\n\
+  echo "Step 1: Ensuring critical columns exist (BLOCKING)..."\n\
+  if ! python ensure_migrations.py; then\n\
+    echo "❌ CRITICAL: Failed to ensure critical columns exist!"\n\
+    echo "   Server will NOT start until this is fixed."\n\
+    echo "   Check the error messages above."\n\
+    exit 1\n\
   fi\n\
+  echo "✅ Critical columns verified"\n\
   echo ""\n\
   echo "Step 2: Running full migration scripts..."\n\
   python run_migrations.py || {\n\
     MIGRATION_EXIT=$?\n\
     echo "⚠️  Full migrations failed with exit code $MIGRATION_EXIT"\n\
     echo "   Critical columns should still be in place from Step 1"\n\
+    echo "   Continuing with server startup..."\n\
   }\n\
   echo ""\n\
-  echo "Step 3: Final verification..."\n\
-  python ensure_migrations.py || echo "⚠️  Final verification failed"\n\
+  echo "Step 3: Final verification (BLOCKING)..."\n\
+  if ! python ensure_migrations.py; then\n\
+    echo "❌ CRITICAL: Final verification failed!"\n\
+    echo "   Server will NOT start until this is fixed."\n\
+    exit 1\n\
+  fi\n\
+  echo "✅ Final verification passed"\n\
 else\n\
   echo "⚠️  DATABASE_URL not set - skipping migrations"\n\
 fi\n\
