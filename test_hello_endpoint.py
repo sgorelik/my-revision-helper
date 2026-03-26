@@ -5,7 +5,6 @@ Verifies that the HelloWorld API endpoint returns the correct status code,
 JSON payload, and content-type header.
 """
 
-import pytest
 from fastapi.testclient import TestClient
 
 from my_revision_helper.api import app
