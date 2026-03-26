@@ -615,6 +615,12 @@ def get_session_id(session_id: Optional[str] = Cookie(None)) -> str:
     return session_id
 
 
+@app.get("/api/hello")
+async def hello():
+    """Hello endpoint - returns a greeting message for the homepage."""
+    return {"message": "Hello World"}
+
+
 @app.get("/api/health")
 async def health():
     """Health check endpoint."""

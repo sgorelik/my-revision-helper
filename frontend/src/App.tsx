@@ -32,6 +32,7 @@ import {
   FlagIcon,
 } from '@heroicons/react/24/outline'
 import Logo from './Logo'
+import Greeting from './Greeting'
 import { useAuth } from './auth'
 
 type RevisionConfig = {
@@ -954,6 +955,13 @@ function App() {
       )}
 
       <div className="max-w-6xl mx-auto px-4 py-6">
+
+      {/* Greeting Banner (Homepage) */}
+      {currentPage === 'home' && !revision && !summary && (
+        <div className="mb-6">
+          <Greeting />
+        </div>
+      )}
 
       {/* Revision Lists View (Homepage) */}
       {currentPage === 'home' && showRevisionList && !revision && !summary && (
