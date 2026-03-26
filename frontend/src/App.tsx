@@ -30,6 +30,7 @@ import {
   PlusIcon,
   ExclamationTriangleIcon,
   FlagIcon,
+  ArrowPathIcon,
 } from '@heroicons/react/24/outline'
 import Logo from './Logo'
 import { useAuth } from './auth'
@@ -746,6 +747,42 @@ function App() {
     setPrepCheckForm({ subject: '', description: '', previousPrepCheckId: null })
     setPrepCheckFiles([])
     setPreviousPrepChecks([])
+  }
+
+  const handleClearHistory = () => {
+    // Reset all revision session state back to initial values
+    setRevision(null)
+    setRun(null)
+    setQuestion(null)
+    setSummary(null)
+    setAnswer('')
+    setLastResult(null)
+    setCurrentQuestionNumber(0)
+    setLastAnsweredQuestionId(null)
+    setTotalQuestions(0)
+    setError(null)
+    setAnswerError(null)
+    setSelectedFiles([])
+    setForm({
+      name: '',
+      subject: '',
+      description: '',
+      desiredQuestionCount: 10,
+      accuracyThreshold: 80,
+      questionStyle: 'free-text',
+    })
+    setFormErrors({})
+    setShowRevisionList(true)
+    setCurrentPage('home')
+    setPrepCheckState(null)
+    setPrepCheckResult(null)
+    setPrepCheckId(null)
+    setPrepCheckForm({ subject: '', description: '', previousPrepCheckId: null })
+    setPrepCheckFiles([])
+    setPreviousPrepChecks([])
+    // Reload revisions list to show latest data
+    loadRevisions()
+    loadCompletedRuns()
   }
 
   const handleStartPrepCheck = () => {
@@ -1796,9 +1833,21 @@ function App() {
                               <span className="text-sm font-medium text-gray-700">
                                 Question {currentQuestionNumber} of {totalQuestions}
                               </span>
-                              <span className="text-xs text-gray-500">
-                                {revision.name} • {revision.subject}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-gray-500">
+                                  {revision.name} • {revision.subject}
+                                </span>
+                                <Button
+                                  size="sm"
+                                  variant="flat"
+                                  onPress={handleClearHistory}
+                                  className={`border border-red-300 text-red-700 bg-white hover:bg-red-50 rounded-lg font-semibold transition-all ${buttonWithIconClassName}`}
+                                  startContent={<ArrowPathIcon className="w-4 h-4" />}
+                                  aria-label="Clear History"
+                                >
+                                  Clear History
+                                </Button>
+                              </div>
                             </div>
                             <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
                               <div 
@@ -2172,6 +2221,16 @@ function App() {
                 })}
               </TableBody>
             </Table>
+            <div className="flex justify-center mt-4">
+              <Button
+                onPress={handleClearHistory}
+                className={`border border-red-300 text-red-700 bg-white hover:bg-red-50 rounded-lg font-semibold transition-all ${buttonWithIconClassName}`}
+                startContent={<ArrowPathIcon className="w-4 h-4" />}
+                aria-label="Clear History"
+              >
+                Clear History
+              </Button>
+            </div>
           </div>
         </div>
       )}
