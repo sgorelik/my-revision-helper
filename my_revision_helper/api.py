@@ -617,8 +617,8 @@ def get_session_id(session_id: Optional[str] = Cookie(None)) -> str:
 
 @app.get("/api/health")
 async def health():
-    """Health check endpoint."""
-    return {"status": "ok"}
+    """Health check endpoint. Returns server status and version. Public access (no auth required)."""
+    return {"status": "healthy", "version": "1.0.0"}
 
 
 @app.get("/api/subjects")
