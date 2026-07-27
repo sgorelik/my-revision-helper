@@ -524,6 +524,9 @@ def main() -> None:
 
             for block in sorted(programme.blocks, key=lambda b: (b.day_of_week, b.block_index)):
                 paper = papers_by_subject.get(block.subject)
+                # The timetable says which day the work happens on, which is the
+                # scheduled day. It doubles as the deadline here because a study
+                # block is meant to be done in its own slot.
                 due = monday + timedelta(days=block.day_of_week)
                 title = f"{block.subject} — {block.focus}" if block.focus else block.subject
 
@@ -552,6 +555,7 @@ def main() -> None:
                         instructions=block.focus,
                         estimated_minutes=block.planned_minutes,
                         due_date=due,
+                        scheduled_date=due,
                         week_label="Week 1",
                         verification="upload" if paper else "self_report",
                         status="todo",

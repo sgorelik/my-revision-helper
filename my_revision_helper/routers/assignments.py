@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user_optional
+from ..clock import local_today
 from ..database import get_db
 from ..deps import get_session_id
 from ..models_db import (
@@ -71,6 +72,29 @@ def _parse_date(value: Optional[str]) -> Optional[datetime]:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid date: {value}")
+
+
+def planned_on(assignment: Assignment):
+    """
+    The calendar date this work is meant to be done on, or None.
+
+    Falls back to the due date so work assigned before scheduling existed still
+    appears in a day view. Answers "what am I doing today".
+    """
+    chosen = assignment.scheduled_date or assignment.due_date
+    return chosen.date() if chosen else None
+
+
+def due_on(assignment: Assignment):
+    """
+    The calendar date this work has to be finished by, or None.
+
+    The other way round from `planned_on`: a plan may schedule work early with no
+    separate deadline, in which case the planned day is the deadline. Answers "is
+    this late".
+    """
+    chosen = assignment.due_date or assignment.scheduled_date
+    return chosen.date() if chosen else None
 
 
 def serialise_assignment(
@@ -134,6 +158,16 @@ def serialise_assignment(
         ),
         estimatedMinutes=assignment.estimated_minutes,
         dueDate=assignment.due_date.isoformat() if assignment.due_date else None,
+        scheduledDate=(
+            assignment.scheduled_date.isoformat() if assignment.scheduled_date else None
+        ),
+        plannedOn=planned_on(assignment).isoformat() if planned_on(assignment) else None,
+        dueOn=due_on(assignment).isoformat() if due_on(assignment) else None,
+        isOverdue=(
+            assignment.status not in FINISHED_STATUSES
+            and due_on(assignment) is not None
+            and due_on(assignment) < local_today()
+        ),
         weekLabel=assignment.week_label,
         verification=assignment.verification or "upload",
         status=assignment.status or "todo",
@@ -194,6 +228,7 @@ def _create_one(
         estimated_minutes=payload.estimatedMinutes
         or (paper.estimated_minutes if paper else None),
         due_date=_parse_date(payload.dueDate),
+        scheduled_date=_parse_date(payload.scheduledDate),
         week_label=payload.weekLabel,
         verification=payload.verification,
         status="todo",
@@ -456,6 +491,10 @@ async def update_assignment(
         assignment.estimated_minutes = payload.estimatedMinutes
     if payload.dueDate is not None:
         assignment.due_date = _parse_date(payload.dueDate)
+    if payload.scheduledDate is not None:
+        # An empty string clears the scheduling, which is how work gets dragged
+        # back off a day.
+        assignment.scheduled_date = _parse_date(payload.scheduledDate)
     if payload.weekLabel is not None:
         assignment.week_label = payload.weekLabel
     if payload.verification is not None:

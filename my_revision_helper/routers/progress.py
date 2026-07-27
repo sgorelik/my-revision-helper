@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user_optional
@@ -35,13 +36,19 @@ from ..models_db import (
     TopicMastery,
 )
 from ..clock import local_today, to_local_date, week_bounds, week_bounds_utc
-from ..routers.assignments import FINISHED_STATUSES, serialise_assignment
+from ..routers.assignments import (
+    FINISHED_STATUSES,
+    due_on,
+    planned_on,
+    serialise_assignment,
+)
 from ..routers.children import _child_response, _plan_response
 from ..schemas.study import (
     ChildProgressResponse,
     MarkingListItem,
     RetestRequest,
     RetestResponse,
+    TodayResponse,
     ScoreLogItem,
     SubjectProgressResponse,
     TopicMasteryResponse,
@@ -575,6 +582,88 @@ async def create_retest(
     )
 
 
+@router.get("/children/{child_id}/today", response_model=TodayResponse)
+async def get_today(
+    child_id: str,
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+) -> TodayResponse:
+    """
+    What this child should do today.
+
+    Answers the only question a student actually has when they sit down. Today's
+    work comes first, then anything late, then what is coming up — so the day has
+    a visible end rather than being an undifferentiated backlog.
+    """
+    db = _require_db(db)
+    if not get_owned_child(db, child_id, build_scope(user, session_id)):
+        raise HTTPException(status_code=404, detail="Child not found")
+
+    today = local_today()
+
+    outstanding = [
+        a
+        for a in db.query(Assignment).filter(Assignment.child_id == child_id).all()
+        if a.status not in FINISHED_STATUSES
+    ]
+
+    due_today = [a for a in outstanding if planned_on(a) == today]
+    overdue = [
+        a
+        for a in outstanding
+        if planned_on(a) != today and due_on(a) is not None and due_on(a) < today
+    ]
+    # Undated work is genuinely "later": it belongs in the queue but must not be
+    # presented as though it were due now.
+    upcoming = [
+        a
+        for a in outstanding
+        if a not in due_today and a not in overdue and (planned_on(a) is None or planned_on(a) > today)
+    ]
+
+    def by_order(items):
+        return sorted(items, key=lambda a: (planned_on(a) or today, a.sort_order or 0))
+
+    plan = (
+        db.query(StudyPlan)
+        .filter(StudyPlan.child_id == child_id, StudyPlan.is_active.is_(True))
+        .order_by(StudyPlan.created_at.desc())
+        .first()
+    )
+
+    blocks: List[Dict] = []
+    if plan:
+        blocks = [
+            {
+                "blockIndex": b.block_index,
+                "subject": b.subject,
+                "focus": b.focus,
+                "plannedMinutes": b.planned_minutes or 50,
+            }
+            for b in sorted(
+                (
+                    b
+                    for b in db.query(PlanBlock).filter(PlanBlock.plan_id == plan.id).all()
+                    if b.day_of_week == today.weekday()
+                ),
+                key=lambda b: b.block_index,
+            )
+        ]
+
+    planned_minutes = sum(int(b["plannedMinutes"]) for b in blocks)
+
+    return TodayResponse(
+        date=today.isoformat(),
+        dayOfWeek=today.weekday(),
+        blocks=blocks,
+        plannedMinutes=planned_minutes,
+        dueToday=[serialise_assignment(db, a) for a in by_order(due_today)],
+        overdue=[serialise_assignment(db, a) for a in by_order(overdue)],
+        upcoming=[serialise_assignment(db, a) for a in by_order(upcoming)[:5]],
+    )
+
+
 @router.get("/children/{child_id}/week", response_model=List[Dict])
 async def get_week_view(
     child_id: str,
@@ -607,12 +696,20 @@ async def get_week_view(
         blocks = [b for b in blocks if b.week_cycle in (None, weekCycle)]
 
     week_start, week_end = week_bounds()
+    # Either date can place work in the week, since the planned day is what the
+    # child follows but older work only has a deadline.
     assignments = (
         db.query(Assignment)
         .filter(
             Assignment.child_id == child_id,
-            Assignment.due_date >= week_start,
-            Assignment.due_date < week_end,
+            or_(
+                and_(Assignment.scheduled_date >= week_start, Assignment.scheduled_date < week_end),
+                and_(
+                    Assignment.scheduled_date.is_(None),
+                    Assignment.due_date >= week_start,
+                    Assignment.due_date < week_end,
+                ),
+            ),
         )
         .all()
     )
@@ -620,11 +717,10 @@ async def get_week_view(
     days: List[Dict] = []
     for day_index in range(plan.days_per_week or 5):
         day_date = week_start + timedelta(days=day_index)
+        day_assignments = [a for a in assignments if planned_on(a) == day_date.date()]
         day_blocks = sorted(
             (b for b in blocks if b.day_of_week == day_index), key=lambda b: b.block_index
         )
-
-        day_assignments = [a for a in assignments if a.due_date and a.due_date.date() == day_date.date()]
 
         days.append(
             {

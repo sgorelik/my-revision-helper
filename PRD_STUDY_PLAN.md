@@ -189,6 +189,39 @@ POST   /api/assignments                    + scheduledDate, resources (extend)
 - Two subjects differing only in case or alias — normalise through
   `normalise_subject` before insert.
 
+## Build status
+
+Phases 1 to 3 are implemented and deployed.
+
+**Phase 1.** `GET /api/assignments/{id}/worksheet` renders a printable,
+answer-key-free worksheet from `paper_questions`, with resource links at the top
+as text plus a QR code and answer space scaled to each question's marks. Links
+live on `papers.resources` and merge with `assignments.resources`. Downloads go
+through an authenticated blob fetch, so the original file is reachable by the
+parent and the student never gets a link to it. Overdue is surfaced on the
+dashboard tile and the kid's day.
+
+**Phase 2.** `POST /api/papers/bulk` makes one paper per file, committing each
+separately so a single unreadable document neither blocks nor discards the rest,
+and reporting per filename. Subject and week are inferred from the filename
+(`subject_from_filename`, `week_from_filename`), which covers the real naming
+convention of the workbooks being uploaded. The staging list shows each guess
+for correction before upload and allows retry of failed rows alone.
+
+**Phase 3.** `assignments.scheduled_date` separates the day work is planned for
+from the day it is due, with `planned_on` / `due_on` resolving the fallback in
+one place so every view agrees. `GET /api/children/{id}/today` returns today's
+timetable blocks, today's work, what slipped, and a short look ahead. The week
+view places work by planned day.
+
+Dates are evaluated in `Europe/London` via `clock.py`, which keeps calendar
+dates (due dates) and UTC timestamps (submissions) apart. Railway runs in UTC,
+where the previous code filed late-evening work under the wrong day.
+
+Not yet built: Phase 4 (managed subject and topic vocabulary, the deploy version
+handshake, audit logging), and a dedicated overdue banner as opposed to the
+current inline counts.
+
 ## Phasing
 
 **Phase 1 — unblock the current flow.** Student-safe worksheet endpoint and the

@@ -52,6 +52,24 @@ export interface StudyPlan {
   blocks: PlanBlock[]
 }
 
+export interface TodayBlock {
+  blockIndex: number
+  subject: string
+  focus?: string | null
+  plannedMinutes: number
+}
+
+/** Today's work, split so the day has a visible end rather than a backlog. */
+export interface Today {
+  date: string
+  dayOfWeek: number
+  blocks: TodayBlock[]
+  plannedMinutes: number
+  dueToday: Assignment[]
+  overdue: Assignment[]
+  upcoming: Assignment[]
+}
+
 /** The outcome for one file in a bulk upload, so failures can be retried alone. */
 export interface BulkUploadItem {
   filename: string
@@ -128,6 +146,11 @@ export interface Assignment {
   resourceUrl?: string | null
   /** The paper's links plus this assignment's extras, already merged server-side. */
   resources: ResourceLink[]
+  /** The day it is planned for, as opposed to the day it is due. */
+  scheduledDate?: string | null
+  plannedOn?: string | null
+  dueOn?: string | null
+  isOverdue: boolean
   estimatedMinutes?: number | null
   dueDate?: string | null
   weekLabel?: string | null

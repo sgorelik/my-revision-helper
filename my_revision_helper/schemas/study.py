@@ -208,6 +208,9 @@ class AssignmentCreateRequest(BaseModel):
     resources: Optional[List[ResourceLink]] = None
     estimatedMinutes: Optional[int] = None
     dueDate: Optional[str] = None  # ISO date
+    # The day this is planned for. Distinct from the deadline: a plan may set work
+    # for Monday that is not due until Friday.
+    scheduledDate: Optional[str] = None  # ISO date
     weekLabel: Optional[str] = None
     verification: str = "upload"  # upload, self_report, timer, none
     sortOrder: int = 0
@@ -227,6 +230,7 @@ class AssignmentUpdateRequest(BaseModel):
     resources: Optional[List[ResourceLink]] = None
     estimatedMinutes: Optional[int] = None
     dueDate: Optional[str] = None
+    scheduledDate: Optional[str] = None
     weekLabel: Optional[str] = None
     status: Optional[str] = None
     verification: Optional[str] = None
@@ -256,6 +260,12 @@ class AssignmentResponse(BaseModel):
     resources: List[ResourceLink] = Field(default_factory=list)
     estimatedMinutes: Optional[int] = None
     dueDate: Optional[str] = None
+    scheduledDate: Optional[str] = None
+    # The day it will actually be done and the day it is late after, resolved
+    # server-side so every view agrees on the fallback rule.
+    plannedOn: Optional[str] = None
+    dueOn: Optional[str] = None
+    isOverdue: bool = False
     weekLabel: Optional[str] = None
     verification: str = "upload"
     status: str = "todo"
@@ -269,6 +279,32 @@ class AssignmentResponse(BaseModel):
 class AssignmentListResponse(BaseModel):
     items: List[AssignmentResponse]
     total: int
+
+
+class TodayBlock(BaseModel):
+    """One slot in today's timetable."""
+
+    blockIndex: int
+    subject: str
+    focus: Optional[str] = None
+    plannedMinutes: int = 50
+
+
+class TodayResponse(BaseModel):
+    """
+    Today's work, split so the day has a visible end.
+
+    `dueToday` is the list to work through; `overdue` is what slipped; and
+    `upcoming` is a short look ahead rather than the whole backlog.
+    """
+
+    date: str
+    dayOfWeek: int  # 0 = Monday
+    blocks: List[TodayBlock] = Field(default_factory=list)
+    plannedMinutes: int = 0
+    dueToday: List[AssignmentResponse] = Field(default_factory=list)
+    overdue: List[AssignmentResponse] = Field(default_factory=list)
+    upcoming: List[AssignmentResponse] = Field(default_factory=list)
 
 
 class SelfReportRequest(BaseModel):

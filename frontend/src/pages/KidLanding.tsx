@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
 import { api } from '../api/client'
-import type { Assignment, ChildProgress } from '../api/types'
+import type { Assignment, ChildProgress, Today } from '../api/types'
 import {
   Button,
   Card,
@@ -24,8 +24,85 @@ import {
   theme,
 } from '../components/ui'
 
+/**
+ * Today's plan: the blocks and the work in them.
+ *
+ * Shown above everything else because "what do I do now" is the only question a
+ * student has when they sit down. The list is finite on purpose — a day that
+ * cannot be finished is a day nobody starts.
+ */
+function TodayPanel({ today }: { today: Today }) {
+  const total = today.dueToday.length + today.overdue.length
+  const dayName = new Date(today.date).toLocaleDateString('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  })
+
+  return (
+    <section>
+      <SectionTitle
+        title="Today"
+        subtitle={
+          total === 0
+            ? `${dayName} — nothing set`
+            : `${dayName} — ${total} thing${total === 1 ? '' : 's'}` +
+              (today.plannedMinutes > 0 ? `, about ${today.plannedMinutes} min planned` : '')
+        }
+      />
+
+      {today.blocks.length > 0 && (
+        <div className="mb-3 flex flex-wrap gap-2">
+          {today.blocks.map((block) => (
+            <span
+              key={block.blockIndex}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-slate-100 px-2.5 py-1 text-xs text-slate-600"
+              title={block.focus || undefined}
+            >
+              <span>{subjectIcon(block.subject)}</span>
+              {block.subject}
+              <span className="text-slate-400">{block.plannedMinutes}m</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {today.overdue.length > 0 && (
+        <div className="mb-3 space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-rose-700">
+            Catch up first
+          </div>
+          {today.overdue.map((assignment) => (
+            <AssignmentRow key={assignment.id} assignment={assignment} />
+          ))}
+        </div>
+      )}
+
+      {today.dueToday.length > 0 ? (
+        <div className="space-y-2">
+          {today.dueToday.map((assignment) => (
+            <AssignmentRow key={assignment.id} assignment={assignment} />
+          ))}
+        </div>
+      ) : (
+        today.overdue.length === 0 && (
+          <EmptyState
+            icon="☀️"
+            title="Nothing set for today"
+            body={
+              today.upcoming.length > 0
+                ? 'Nothing due today. You could get ahead on what is coming up below.'
+                : 'Nothing on the list at all. Enjoy it.'
+            }
+          />
+        )
+      )}
+    </section>
+  )
+}
+
 function AssignmentRow({ assignment }: { assignment: Assignment }) {
-  const due = dueLabel(assignment.dueDate)
+  const due = dueLabel(assignment.dueOn || assignment.dueDate)
   const isTask = assignment.assignmentType === 'task'
 
   return (
@@ -50,7 +127,7 @@ function AssignmentRow({ assignment }: { assignment: Assignment }) {
 
       <div className="flex shrink-0 items-center gap-2">
         {isTask && <Pill tone="violet">Tick off</Pill>}
-        <Pill tone={due.tone}>{due.text}</Pill>
+        <Pill tone={assignment.isOverdue ? 'red' : due.tone}>{due.text}</Pill>
       </div>
     </Link>
   )
@@ -60,6 +137,7 @@ export default function KidLanding() {
   const { childId } = useParams<{ childId: string }>()
   const [progress, setProgress] = useState<ChildProgress | null>(null)
   const [todo, setTodo] = useState<Assignment[]>([])
+  const [today, setToday] = useState<Today | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -68,12 +146,14 @@ export default function KidLanding() {
     setLoading(true)
     setError(null)
     try {
-      const [progressData, todoData] = await Promise.all([
+      const [progressData, todoData, todayData] = await Promise.all([
         api.getProgress(childId),
         api.getTodo(childId),
+        api.getToday(childId),
       ])
       setProgress(progressData)
       setTodo(todoData)
+      setToday(todayData)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load your work')
     } finally {
@@ -98,6 +178,12 @@ export default function KidLanding() {
 
   const hour = new Date().getHours()
   const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
+
+  // Today's panel already lists these, so the rest of the queue omits them.
+  const shownToday = new Set(
+    today ? [...today.dueToday, ...today.overdue].map((a) => a.id) : [],
+  )
+  const laterWork = todo.filter((assignment) => !shownToday.has(assignment.id))
 
   return (
     <div className="space-y-6">
@@ -155,39 +241,35 @@ export default function KidLanding() {
         )}
       </div>
 
-      {/* Up next */}
-      <section>
-        <SectionTitle
-          title="Up next"
-          subtitle={
-            todo.length > 0
-              ? `${todo.length} thing${todo.length === 1 ? '' : 's'} to do` +
-                (progress.assignmentsOverdue > 0
-                  ? ` · ${progress.assignmentsOverdue} running late`
-                  : '')
-              : undefined
-          }
-          action={
-            <Link to={`/dashboard/${child.id}`} className="text-sm font-medium text-slate-600 hover:text-slate-900">
-              See all progress →
-            </Link>
-          }
-        />
+      {today && <TodayPanel today={today} />}
 
-        {todo.length === 0 ? (
-          <EmptyState
-            icon="🎉"
-            title="Nothing left to do"
-            body="Everything assigned has been handed in. Well done."
+      {/* Everything else still outstanding, minus what today already lists. */}
+      {laterWork.length > 0 && (
+        <section>
+          <SectionTitle
+            title="Coming up"
+            subtitle={`${laterWork.length} more thing${laterWork.length === 1 ? '' : 's'} on the list`}
+            action={
+              <Link to={`/dashboard/${child.id}`} className="text-sm font-medium text-slate-600 hover:text-slate-900">
+                See all progress →
+              </Link>
+            }
           />
-        ) : (
           <div className="space-y-2">
-            {todo.map((assignment) => (
+            {laterWork.map((assignment) => (
               <AssignmentRow key={assignment.id} assignment={assignment} />
             ))}
           </div>
-        )}
-      </section>
+        </section>
+      )}
+
+      {todo.length === 0 && (
+        <EmptyState
+          icon="🎉"
+          title="Nothing left to do"
+          body="Everything assigned has been handed in. Well done."
+        />
+      )}
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Subjects */}

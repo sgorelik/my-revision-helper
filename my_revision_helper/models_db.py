@@ -380,6 +380,10 @@ class Assignment(Base):
     resources = Column(JSON)
     estimated_minutes = Column(Integer)
     due_date = Column(DateTime)
+    # The day this is planned for, which is not the same as the day it is due:
+    # a plan says "do the Maths workbook on Monday" while the deadline may be
+    # Friday. Naive midnight, treated as a calendar date.
+    scheduled_date = Column(DateTime)
     week_label = Column(String)
     # How we know it is done: upload work, self-report, log time, or nothing
     verification = Column(String, default="upload")  # upload, self_report, timer, none

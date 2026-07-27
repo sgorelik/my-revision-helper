@@ -86,6 +86,8 @@ def main():
         # Prerequisite links shown to the student and printed on the worksheet
         ("papers", "resources", "resources JSON"),
         ("assignments", "resources", "resources JSON"),
+        # The day a piece of work is planned for, as opposed to its deadline
+        ("assignments", "scheduled_date", "scheduled_date TIMESTAMP"),
     ]
     
     all_good = True

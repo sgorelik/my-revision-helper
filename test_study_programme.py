@@ -1531,6 +1531,143 @@ def test_bulk_upload_accepts_per_file_subject_and_link(client):
     assert paper["resources"][0]["url"] == "https://www.khanacademy.org/math/fractions"
 
 
+def _task(client, child, title, **kwargs):
+    """A self-reported task, which needs no paper or marking."""
+    payload = {
+        "childId": child,
+        "title": title,
+        "subject": "Mathematics",
+        "assignmentType": "task",
+        "verification": "self_report",
+    }
+    payload.update(kwargs)
+    return client.post("/api/assignments", json=payload).json()
+
+
+@pytest.mark.integration
+def test_today_separates_todays_work_from_what_slipped(client, child):
+    today = datetime.now().date()
+
+    _task(client, child, "For today", scheduledDate=today.isoformat())
+    _task(client, child, "Slipped", scheduledDate=(today - timedelta(days=2)).isoformat())
+    _task(client, child, "Later this week", scheduledDate=(today + timedelta(days=3)).isoformat())
+
+    body = client.get(f"/api/children/{child}/today").json()
+
+    assert body["date"] == today.isoformat()
+    assert [a["title"] for a in body["dueToday"]] == ["For today"]
+    assert [a["title"] for a in body["overdue"]] == ["Slipped"]
+    assert [a["title"] for a in body["upcoming"]] == ["Later this week"]
+
+
+@pytest.mark.integration
+def test_work_scheduled_for_a_day_is_not_late_before_its_deadline(client, child):
+    """
+    The planned day and the deadline are different things: work set for Monday
+    and due Friday is not late on Tuesday, it is just not done yet.
+    """
+    today = datetime.now().date()
+
+    _task(
+        client,
+        child,
+        "Start Monday, hand in Friday",
+        scheduledDate=(today - timedelta(days=1)).isoformat(),
+        dueDate=(today + timedelta(days=4)).isoformat(),
+    )
+
+    body = client.get(f"/api/children/{child}/today").json()
+    assert body["overdue"] == []
+
+    progress = client.get(f"/api/children/{child}/progress").json()
+    assert progress["assignmentsOverdue"] == 0
+
+
+@pytest.mark.integration
+def test_work_with_only_a_due_date_still_appears_on_its_day(client, child):
+    """Assignments created before scheduling existed must not vanish from the day view."""
+    today = datetime.now().date()
+    _task(client, child, "Due today, never scheduled", dueDate=today.isoformat())
+
+    body = client.get(f"/api/children/{child}/today").json()
+    assert [a["title"] for a in body["dueToday"]] == ["Due today, never scheduled"]
+
+
+@pytest.mark.integration
+def test_undated_work_is_upcoming_rather_than_due_now(client, child):
+    _task(client, child, "Someday")
+
+    body = client.get(f"/api/children/{child}/today").json()
+    assert body["dueToday"] == []
+    assert body["overdue"] == []
+    assert [a["title"] for a in body["upcoming"]] == ["Someday"]
+
+
+@pytest.mark.integration
+def test_scheduling_can_be_changed_and_cleared(client, child):
+    today = datetime.now().date()
+    assignment = _task(client, child, "Movable", scheduledDate=today.isoformat())
+    assert assignment["plannedOn"] == today.isoformat()
+
+    moved = client.patch(
+        f"/api/assignments/{assignment['id']}",
+        json={"scheduledDate": (today + timedelta(days=1)).isoformat()},
+    ).json()
+    assert moved["plannedOn"] == (today + timedelta(days=1)).isoformat()
+
+    cleared = client.patch(
+        f"/api/assignments/{assignment['id']}", json={"scheduledDate": ""}
+    ).json()
+    assert cleared["scheduledDate"] is None
+    assert cleared["plannedOn"] is None
+
+
+@pytest.mark.integration
+def test_assigning_a_paper_to_both_kids_schedules_it_for_both(client, child):
+    """Handing out a week's work is one action, and the day has to survive it."""
+    second = client.post("/api/children", json={"name": "Second Child"}).json()["id"]
+    paper, _ = _assign_workbook(client, child)
+    today = datetime.now().date()
+
+    response = client.post(
+        "/api/assignments/bulk",
+        json={
+            "childIds": [child, second],
+            "assignments": [
+                {
+                    "childId": child,
+                    "title": "Week 1 workbook",
+                    "subject": "Mathematics",
+                    "assignmentType": "paper",
+                    "paperId": paper["id"],
+                    "scheduledDate": today.isoformat(),
+                }
+            ],
+        },
+    )
+    assert response.status_code == 201
+
+    created = response.json()["items"]
+    assert len(created) == 2
+    assert all(a["plannedOn"] == today.isoformat() for a in created)
+
+    for kid in (child, second):
+        titles = [a["title"] for a in client.get(f"/api/children/{kid}/today").json()["dueToday"]]
+        assert "Week 1 workbook" in titles
+
+
+@pytest.mark.integration
+def test_today_is_not_reachable_from_another_account(client, child):
+    from fastapi.testclient import TestClient
+
+    from my_revision_helper.api import app
+
+    other = TestClient(app)
+    other.cookies.set("session_id", "someone-else-entirely")
+
+    assert other.get(f"/api/children/{child}/today").status_code == 404
+
+
 @pytest.mark.integration
 def test_deleting_a_child_takes_their_whole_history_with_them(
     client, child, stub_marking, monkeypatch

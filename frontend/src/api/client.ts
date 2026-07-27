@@ -18,6 +18,7 @@ import type {
   RetestResult,
   ScoreLogItem,
   StudyPlan,
+  Today,
   TopicMastery,
   WeekDay,
 } from './types'
@@ -187,6 +188,8 @@ export const api = {
 
   getProgress: (childId: string) => get<ChildProgress>(`/children/${childId}/progress`),
 
+  getToday: (childId: string) => get<Today>(`/children/${childId}/today`),
+
   getTodo: (childId: string) =>
     get<{ items: Assignment[] }>(`/children/${childId}/todo`).then((r) => r.items),
 
@@ -312,6 +315,7 @@ export const api = {
     resourceUrl?: string
     estimatedMinutes?: number
     dueDate?: string
+    scheduledDate?: string
     weekLabel?: string
     verification?: string
   }) => send<Assignment>('POST', '/assignments', payload),

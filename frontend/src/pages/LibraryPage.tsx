@@ -569,6 +569,7 @@ function AssignModal({
   const { children } = useChildren()
   const [selected, setSelected] = useState<string[]>([])
   const [dueDate, setDueDate] = useState('')
+  const [scheduledDate, setScheduledDate] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -584,6 +585,7 @@ function AssignModal({
           assignmentType: 'paper',
           paperId: paper.id,
           dueDate: dueDate || undefined,
+          scheduledDate: scheduledDate || undefined,
           weekLabel: paper.weekLabel || undefined,
           estimatedMinutes: paper.estimatedMinutes || undefined,
           verification: 'upload',
@@ -630,16 +632,27 @@ function AssignModal({
           ))}
         </div>
 
-        <div className="mt-4">
-          <label className="mb-1.5 block text-sm font-medium text-slate-700">
-            Due date (optional)
-          </label>
-          <input
-            type="date"
-            value={dueDate}
-            onChange={(e) => setDueDate(e.target.value)}
-            className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
-          />
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Do it on</label>
+            <input
+              type="date"
+              value={scheduledDate}
+              onChange={(e) => setScheduledDate(e.target.value)}
+              className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
+            />
+            <p className="mt-1 text-xs text-slate-500">Shows up in their day.</p>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-slate-700">Due by</label>
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
+            />
+            <p className="mt-1 text-xs text-slate-500">Late after this.</p>
+          </div>
         </div>
 
         {error && (
