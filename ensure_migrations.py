@@ -23,8 +23,11 @@ def ensure_column_exists(engine, table_name: str, column_name: str, column_def: 
     inspector = inspect(engine)
     
     if not inspector.has_table(table_name):
-        print(f"⚠️  Table {table_name} does not exist - skipping column check")
-        return False
+        # Not a failure: this script runs before the migrations that create
+        # tables, so an absent table simply has nothing to patch yet. Treating
+        # it as an error would stop a fresh database from ever starting up.
+        print(f"⚠️  Table {table_name} does not exist yet - nothing to patch")
+        return True
     
     columns = [col['name'] for col in inspector.get_columns(table_name)]
     
@@ -80,6 +83,9 @@ def main():
         ("revisions", "child_id", "child_id VARCHAR"),
         ("revisions", "source_marking_id", "source_marking_id VARCHAR"),
         ("revision_runs", "child_id", "child_id VARCHAR"),
+        # Prerequisite links shown to the student and printed on the worksheet
+        ("papers", "resources", "resources JSON"),
+        ("assignments", "resources", "resources JSON"),
     ]
     
     all_good = True

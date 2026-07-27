@@ -13,6 +13,7 @@ import type {
   Marking,
   MarkingListItem,
   Paper,
+  ResourceLink,
   RetestResult,
   ScoreLogItem,
   StudyPlan,
@@ -102,6 +103,50 @@ async function send<T>(method: string, path: string, body?: unknown): Promise<T>
   return handle<T>(response)
 }
 
+async function fetchBlob(path: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE}${path}`, { headers: await authHeaders() })
+  if (!response.ok) {
+    throw new ApiError(`Could not open that file (${response.status})`, response.status)
+  }
+  return response.blob()
+}
+
+/**
+ * Open an authenticated file in a new tab.
+ *
+ * A plain link cannot be used because these endpoints need the bearer token, so
+ * the bytes are fetched and handed to the browser as a blob. The tab is opened
+ * before the await: popup blockers only allow it during the click itself.
+ */
+export async function openInNewTab(path: string): Promise<void> {
+  const tab = window.open('', '_blank')
+  try {
+    const url = URL.createObjectURL(await fetchBlob(path))
+    if (tab) {
+      tab.location.href = url
+    } else {
+      window.location.href = url
+    }
+    // Long enough for the tab to load; revoking sooner leaves a blank page.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  } catch (error) {
+    tab?.close()
+    throw error
+  }
+}
+
+/** Save an authenticated file to disk under a sensible name. */
+export async function downloadFile(path: string, filename: string): Promise<void> {
+  const url = URL.createObjectURL(await fetchBlob(path))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
 async function upload<T>(path: string, form: FormData): Promise<T> {
   // Content-Type is deliberately omitted so the browser sets the multipart boundary.
   const response = await fetch(`${API_BASE}${path}`, {
@@ -181,6 +226,8 @@ export const api = {
     weekLabel?: string
     yearGroup?: string
     pastedText?: string
+    resourceUrl?: string
+    resourceLabel?: string
     files: File[]
   }) => {
     const form = new FormData()
@@ -190,13 +237,34 @@ export const api = {
     form.append('weekLabel', payload.weekLabel || '')
     form.append('yearGroup', payload.yearGroup || '')
     form.append('pastedText', payload.pastedText || '')
+    form.append('resourceUrl', payload.resourceUrl || '')
+    form.append('resourceLabel', payload.resourceLabel || '')
     payload.files.forEach((file) => form.append('files', file))
     return upload<Paper>('/papers', form)
   },
 
+  updatePaper: (
+    paperId: string,
+    payload: {
+      title?: string
+      subject?: string
+      weekLabel?: string
+      topics?: string[]
+      resources?: ResourceLink[]
+    },
+  ) => send<Paper>('PATCH', `/papers/${paperId}`, payload),
+
   deletePaper: (paperId: string) => send<void>('DELETE', `/papers/${paperId}`),
 
-  paperFileUrl: (paperId: string) => `${API_BASE}/papers/${paperId}/file`,
+  /**
+   * The original upload. Parent-only: for a workbook this still contains the
+   * answer key, which is why students are given the generated worksheet instead.
+   */
+  openPaperFile: (paperId: string) => openInNewTab(`/papers/${paperId}/file`),
+
+  /** The student-safe printable worksheet, built from the parsed questions. */
+  openWorksheet: (assignmentId: string) =>
+    openInNewTab(`/assignments/${assignmentId}/worksheet`),
 
   // --- Assignments ---------------------------------------------------------
 

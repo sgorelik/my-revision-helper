@@ -52,6 +52,13 @@ export interface StudyPlan {
   blocks: PlanBlock[]
 }
 
+/** A "watch this first" link. Belongs to the material, so it travels with it. */
+export interface ResourceLink {
+  url: string
+  label?: string | null
+  kind: string
+}
+
 export interface PaperQuestion {
   id: string
   number: string
@@ -74,6 +81,9 @@ export interface Paper {
   totalMarks?: number | null
   estimatedMinutes?: number | null
   hasAnswerKey: boolean
+  /** False when the upload contains an answer key, so it must not go to a student. */
+  originalIsStudentSafe: boolean
+  resources: ResourceLink[]
   parseStatus: string
   createdAt: string
   questions?: PaperQuestion[]
@@ -102,6 +112,8 @@ export interface Assignment {
   paperId?: string | null
   instructions?: string | null
   resourceUrl?: string | null
+  /** The paper's links plus this assignment's extras, already merged server-side. */
+  resources: ResourceLink[]
   estimatedMinutes?: number | null
   dueDate?: string | null
   weekLabel?: string | null
@@ -205,6 +217,7 @@ export interface ChildProgress {
   assignmentsTotal: number
   assignmentsDone: number
   assignmentsDueThisWeek: number
+  assignmentsOverdue: number
   minutesLoggedThisWeek: number
   weeklyMinutesTarget: number
   averagePercentage?: number | null

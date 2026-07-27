@@ -161,7 +161,10 @@ export default function KidLanding() {
           title="Up next"
           subtitle={
             todo.length > 0
-              ? `${todo.length} thing${todo.length === 1 ? '' : 's'} to do`
+              ? `${todo.length} thing${todo.length === 1 ? '' : 's'} to do` +
+                (progress.assignmentsOverdue > 0
+                  ? ` · ${progress.assignmentsOverdue} running late`
+                  : '')
               : undefined
           }
           action={

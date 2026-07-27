@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { api, ApiError } from '../api/client'
-import type { Assignment, Paper } from '../api/types'
+import type { Assignment, Paper, ResourceLink } from '../api/types'
 import {
   Button,
   Card,
@@ -21,6 +21,60 @@ import {
   dueLabel,
   subjectIcon,
 } from '../components/ui'
+
+const KIND_LABELS: Record<string, { icon: string; verb: string }> = {
+  watch: { icon: '▶', verb: 'Watch' },
+  read: { icon: '📖', verb: 'Read' },
+  practise: { icon: '✏️', verb: 'Practise' },
+}
+
+/**
+ * The "watch this first" links.
+ *
+ * Kept above the questions and left there for the whole task rather than being
+ * dismissed once work starts: the common case is getting stuck halfway and
+ * wanting the explanation again.
+ */
+function ResourceLinks({ resources }: { resources: ResourceLink[] }) {
+  if (resources.length === 0) return null
+
+  return (
+    <Card className="border-sky-200 bg-sky-50">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-sky-900">
+        Before you start
+      </h2>
+      <div className="mt-3 space-y-2">
+        {resources.map((resource) => {
+          const kind = KIND_LABELS[resource.kind] || KIND_LABELS.watch
+          return (
+            <a
+              key={resource.url}
+              href={resource.url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-3 rounded-xl border border-sky-200 bg-white p-3 transition hover:border-sky-400 hover:shadow-sm"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-100 text-sky-700">
+                {kind.icon}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-semibold text-slate-900">
+                  {resource.label || `${kind.verb} this first`}
+                </span>
+                <span className="block truncate text-xs text-slate-500">{resource.url}</span>
+              </span>
+              <span className="shrink-0 text-sky-600">→</span>
+            </a>
+          )
+        })}
+      </div>
+      <p className="mt-3 text-xs text-sky-800">
+        These stay here while you work — come back any time you get stuck. They are also printed
+        on your worksheet with a QR code.
+      </p>
+    </Card>
+  )
+}
 
 const BAND_TONES: Record<string, 'slate' | 'blue' | 'amber' | 'violet'> = {
   'warm-up': 'slate',
@@ -92,6 +146,7 @@ export default function AssignmentPage() {
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  const [printing, setPrinting] = useState(false)
 
   const load = useCallback(async () => {
     if (!assignmentId) return
@@ -115,6 +170,19 @@ export default function AssignmentPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  const handlePrint = async () => {
+    if (!assignmentId) return
+    setPrinting(true)
+    setSubmitError(null)
+    try {
+      await api.openWorksheet(assignmentId)
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : 'Could not open the worksheet')
+    } finally {
+      setPrinting(false)
+    }
+  }
 
   const handleSubmitPaper = async () => {
     if (!assignmentId) return
@@ -193,19 +261,12 @@ export default function AssignmentPage() {
             {assignment.instructions && (
               <p className="mt-3 text-slate-600">{assignment.instructions}</p>
             )}
-            {assignment.resourceUrl && (
-              <a
-                href={assignment.resourceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-2 inline-block text-sm font-medium text-sky-600 hover:underline"
-              >
-                Watch / read this first →
-              </a>
-            )}
           </div>
         </div>
       </Card>
+
+      {/* Prerequisites come before everything else, including the questions. */}
+      <ResourceLinks resources={assignment.resources || []} />
 
       {alreadyMarked && (
         <Card className="border-emerald-200 bg-emerald-50">
@@ -223,24 +284,29 @@ export default function AssignmentPage() {
         </Card>
       )}
 
-      {/* Questions */}
-      {paper && (paper.questions?.length ?? 0) > 0 && (
+      {/* Questions. Shown for any paper: the printable worksheet is built from
+          the stripped document text even when nothing could be parsed. */}
+      {paper && (
         <section>
           <SectionTitle
             title="The questions"
             subtitle="Work through these on paper, then hand in a photo below"
             action={
-              paper.sourceFileId ? (
-                <a
-                  href={api.paperFileUrl(paper.id)}
-                  className="text-sm font-medium text-slate-600 hover:text-slate-900"
-                >
-                  Download original
-                </a>
-              ) : undefined
+              <Button variant="secondary" onClick={handlePrint} disabled={printing}>
+                {printing ? 'Preparing…' : 'Print worksheet'}
+              </Button>
             }
           />
-          <QuestionList paper={paper} />
+          {(paper.questions?.length ?? 0) > 0 ? (
+            <QuestionList paper={paper} />
+          ) : (
+            <Card>
+              <p className="text-slate-600">
+                The questions in this one could not be listed separately. Print the worksheet to
+                see it in full.
+              </p>
+            </Card>
+          )}
         </section>
       )}
 

@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { api, ApiError } from '../api/client'
-import type { Paper } from '../api/types'
+import type { Paper, ResourceLink } from '../api/types'
 import { useChildren } from '../context/ChildContext'
 import {
   Button,
@@ -25,6 +25,8 @@ function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
   const [weekLabel, setWeekLabel] = useState('')
   const [files, setFiles] = useState<File[]>([])
   const [pastedText, setPastedText] = useState('')
+  const [resourceUrl, setResourceUrl] = useState('')
+  const [resourceLabel, setResourceLabel] = useState('')
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<Paper | null>(null)
@@ -42,11 +44,21 @@ function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
     setError(null)
     setResult(null)
     try {
-      const paper = await api.uploadPaper({ subject, title, weekLabel, files, pastedText })
+      const paper = await api.uploadPaper({
+        subject,
+        title,
+        weekLabel,
+        files,
+        pastedText,
+        resourceUrl,
+        resourceLabel,
+      })
       setResult(paper)
       setFiles([])
       setPastedText('')
       setTitle('')
+      setResourceUrl('')
+      setResourceLabel('')
       onUploaded()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Upload failed')
@@ -107,6 +119,30 @@ function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
         </p>
       </div>
 
+      <div className="rounded-xl border border-sky-200 bg-sky-50 p-3">
+        <label className="mb-1.5 block text-sm font-medium text-sky-900">
+          Watch-first link (optional)
+        </label>
+        <div className="grid gap-2 sm:grid-cols-[2fr_1fr]">
+          <input
+            value={resourceUrl}
+            onChange={(e) => setResourceUrl(e.target.value)}
+            placeholder="https://www.khanacademy.org/…"
+            className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
+          />
+          <input
+            value={resourceLabel}
+            onChange={(e) => setResourceLabel(e.target.value)}
+            placeholder="Watch this first"
+            className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
+          />
+        </div>
+        <p className="mt-1.5 text-xs text-sky-800">
+          Attached to the paper itself, so it comes along every time this is assigned. Shown above
+          the questions and printed on the worksheet with a QR code.
+        </p>
+      </div>
+
       <details>
         <summary className="cursor-pointer text-sm font-medium text-slate-600">
           …or paste the text instead
@@ -141,6 +177,125 @@ function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
         {uploading ? 'Reading and parsing the document…' : 'Add to library'}
       </Button>
     </Card>
+  )
+}
+
+/**
+ * Add or remove the watch-first links on a paper already in the library.
+ *
+ * Editing them here rather than per assignment is deliberate: the link belongs
+ * to the material, so fixing it once fixes every assignment of it.
+ */
+function LinksModal({
+  paper,
+  onClose,
+  onSaved,
+}: {
+  paper: Paper
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [links, setLinks] = useState<ResourceLink[]>(paper.resources || [])
+  const [url, setUrl] = useState('')
+  const [label, setLabel] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const add = () => {
+    const trimmed = url.trim()
+    if (!trimmed) return
+    if (!/^https?:\/\//i.test(trimmed)) {
+      setError('Links need to start with http:// or https://')
+      return
+    }
+    setError(null)
+    setLinks((current) => [...current, { url: trimmed, label: label.trim() || null, kind: 'watch' }])
+    setUrl('')
+    setLabel('')
+  }
+
+  const save = async () => {
+    setSaving(true)
+    setError(null)
+    try {
+      await api.updatePaper(paper.id, { resources: links })
+      onSaved()
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the links')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+      <Card className="w-full max-w-lg">
+        <h3 className="text-lg font-semibold text-slate-900">Links for “{paper.title}”</h3>
+        <p className="mt-1 text-sm text-slate-500">
+          Shown above the questions and printed on the worksheet with a QR code.
+        </p>
+
+        <div className="mt-4 space-y-2">
+          {links.length === 0 && (
+            <p className="text-sm text-slate-500">No links on this paper yet.</p>
+          )}
+          {links.map((link, index) => (
+            <div
+              key={`${link.url}-${index}`}
+              className="flex items-center gap-2 rounded-xl border border-slate-200 p-2.5"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-slate-800">
+                  {link.label || 'Watch this first'}
+                </div>
+                <div className="truncate text-xs text-slate-500">{link.url}</div>
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setLinks((c) => c.filter((_, i) => i !== index))}
+              >
+                ✕
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-[2fr_1fr]">
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://www.khanacademy.org/…"
+            className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
+          />
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Watch this first"
+            className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
+          />
+        </div>
+        <Button size="sm" variant="secondary" onClick={add} className="mt-2">
+          Add link
+        </Button>
+
+        {error && (
+          <div className="mt-3">
+            <ErrorBanner message={error} />
+          </div>
+        )}
+
+        <div className="mt-5 flex gap-2">
+          <Button variant="secondary" onClick={onClose} className="flex-1">
+            Cancel
+          </Button>
+          <Button onClick={save} disabled={saving} className="flex-1">
+            {saving ? 'Saving…' : 'Save links'}
+          </Button>
+        </div>
+      </Card>
+    </div>
   )
 }
 
@@ -253,6 +408,7 @@ export default function LibraryPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [assigning, setAssigning] = useState<Paper | null>(null)
+  const [editingLinks, setEditingLinks] = useState<Paper | null>(null)
   const [toast, setToast] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -278,6 +434,14 @@ export default function LibraryPage() {
       await load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not delete this paper')
+    }
+  }
+
+  const openFile = async (paper: Paper) => {
+    try {
+      await api.openPaperFile(paper.id)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not open the file')
     }
   }
 
@@ -336,6 +500,11 @@ export default function LibraryPage() {
                     <Pill tone="amber">No key</Pill>
                   )}
                   {paper.parseStatus === 'failed' && <Pill tone="red">Parse failed</Pill>}
+                  {paper.resources.length > 0 && (
+                    <Pill tone="blue">
+                      {paper.resources.length} link{paper.resources.length === 1 ? '' : 's'}
+                    </Pill>
+                  )}
                 </div>
 
                 {paper.topics.length > 0 && (
@@ -348,11 +517,19 @@ export default function LibraryPage() {
                   <Button size="sm" onClick={() => setAssigning(paper)} className="flex-1">
                     Assign
                   </Button>
-                  <a href={api.paperFileUrl(paper.id)} className="contents">
-                    <Button size="sm" variant="secondary">
+                  <Button size="sm" variant="secondary" onClick={() => setEditingLinks(paper)}>
+                    Links
+                  </Button>
+                  {paper.sourceFileId && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      title="The original upload, answer key included. Parent view only."
+                      onClick={() => openFile(paper)}
+                    >
                       File
                     </Button>
-                  </a>
+                  )}
                   <Button size="sm" variant="ghost" onClick={() => remove(paper)}>
                     🗑
                   </Button>
@@ -368,6 +545,17 @@ export default function LibraryPage() {
           paper={assigning}
           onClose={() => setAssigning(null)}
           onAssigned={() => setToast('Assigned')}
+        />
+      )}
+
+      {editingLinks && (
+        <LinksModal
+          paper={editingLinks}
+          onClose={() => setEditingLinks(null)}
+          onSaved={() => {
+            setToast('Links saved')
+            void load()
+          }}
         />
       )}
 

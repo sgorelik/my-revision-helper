@@ -33,6 +33,7 @@ MIGRATIONS = [
     "migrate_add_prep_check_history_fields.py",
     "migrate_add_prep_check_versioning.py",
     "migrate_add_study_programme.py",
+    "migrate_add_resource_links.py",
 ]
 
 def run_migration(migration_file: str) -> bool:

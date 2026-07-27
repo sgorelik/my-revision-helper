@@ -250,6 +250,11 @@ async def get_child_progress(
         a for a in outstanding if a.due_date and week_start <= a.due_date < week_end
     ]
 
+    # Overdue is compared on the date, not the instant. Work set for today is not
+    # late during the evening it was set, which a timestamp comparison would say.
+    today = datetime.now().date()
+    overdue = [a for a in outstanding if a.due_date and a.due_date.date() < today]
+
     percentages = [m.percentage for m in markings if m.percentage is not None]
 
     return ChildProgressResponse(
@@ -287,6 +292,7 @@ async def get_child_progress(
         assignmentsTotal=len(assignments),
         assignmentsDone=len(completed),
         assignmentsDueThisWeek=len(due_this_week),
+        assignmentsOverdue=len(overdue),
         minutesLoggedThisWeek=minutes_this_week,
         weeklyMinutesTarget=(plan.weekly_minutes_target or 0) if plan else 0,
         averagePercentage=(

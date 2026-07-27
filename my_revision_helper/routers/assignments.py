@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user_optional
@@ -24,6 +25,7 @@ from ..database import get_db
 from ..deps import get_session_id
 from ..models_db import (
     Assignment,
+    Child,
     Marking,
     Paper,
     PaperQuestion,
@@ -38,6 +40,7 @@ from ..schemas.study import (
     SelfReportRequest,
 )
 from ..services.scope import build_scope, ensure_user_row, get_owned_child, restrict_to_owner
+from ..services.worksheet import merge_resources, render_worksheet
 
 logger = logging.getLogger(__name__)
 
@@ -76,13 +79,18 @@ def serialise_assignment(
     *,
     question_count: Optional[int] = None,
     marking: Optional[Marking] = None,
+    paper: Optional[Paper] = None,
 ) -> AssignmentResponse:
     """
     Build the API representation of an assignment.
 
-    Shared with the progress endpoints. Pass question_count and marking when
-    they have already been fetched in bulk, to avoid a query per row.
+    Shared with the progress endpoints. Pass question_count, marking and paper
+    when they have already been fetched in bulk, to avoid a query per row.
     """
+    if paper is None and assignment.paper_id:
+        # Falls back to the relationship, which is a primary-key load and is
+        # already cached in the session when the paper was fetched alongside.
+        paper = assignment.paper
     if question_count is None:
         question_count = (
             db.query(PaperQuestion).filter(PaperQuestion.paper_id == assignment.paper_id).count()
@@ -119,6 +127,11 @@ def serialise_assignment(
         paperId=assignment.paper_id,
         instructions=assignment.instructions,
         resourceUrl=assignment.resource_url,
+        resources=merge_resources(
+            paper.resources if paper else None,
+            assignment.resources,
+            assignment.resource_url,
+        ),
         estimatedMinutes=assignment.estimated_minutes,
         dueDate=assignment.due_date.isoformat() if assignment.due_date else None,
         weekLabel=assignment.week_label,
@@ -175,6 +188,9 @@ def _create_one(
         paper_id=payload.paperId if payload.assignmentType == "paper" else None,
         instructions=payload.instructions,
         resource_url=payload.resourceUrl,
+        resources=merge_resources(
+            None, [link.model_dump() for link in payload.resources or []]
+        ),
         estimated_minutes=payload.estimatedMinutes
         or (paper.estimated_minutes if paper else None),
         due_date=_parse_date(payload.dueDate),
@@ -333,6 +349,70 @@ async def get_assignment(
     return serialise_assignment(db, assignment)
 
 
+@router.get("/assignments/{assignment_id}/worksheet", response_class=HTMLResponse)
+async def get_assignment_worksheet(
+    assignment_id: str,
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+) -> HTMLResponse:
+    """
+    The printable worksheet for an assignment.
+
+    Deliberately not the uploaded document: that still contains the answer key
+    for any workbook it came with. This is built from the parsed questions and
+    the answer-key-stripped text, so it is safe to hand to a student and safe to
+    print. Prerequisite links are printed on it with a QR code, because a
+    worksheet's purpose is to leave the screen.
+    """
+    db = _require_db(db)
+    scope = build_scope(user, session_id)
+
+    assignment = restrict_to_owner(
+        db.query(Assignment).filter(Assignment.id == assignment_id), Assignment, scope
+    ).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    paper = (
+        db.query(Paper).filter(Paper.id == assignment.paper_id).first()
+        if assignment.paper_id
+        else None
+    )
+
+    questions = []
+    if paper:
+        questions = (
+            db.query(PaperQuestion)
+            .filter(PaperQuestion.paper_id == paper.id)
+            .order_by(PaperQuestion.order_index)
+            .all()
+        )
+
+    child = db.query(Child).filter(Child.id == assignment.child_id).first()
+
+    html_doc = render_worksheet(
+        title=assignment.title or (paper.title if paper else "Worksheet"),
+        subject=assignment.subject,
+        student_name=child.name if child else None,
+        due_text=(
+            f"Due {assignment.due_date:%a %d %b}" if assignment.due_date else None
+        ),
+        total_marks=paper.total_marks if paper else None,
+        resources=merge_resources(
+            paper.resources if paper else None,
+            assignment.resources,
+            assignment.resource_url,
+        ),
+        questions=questions,
+        # Only ever the stripped text; paper.full_text would carry the key.
+        fallback_text=(paper.question_text if paper and not questions else None)
+        or (assignment.instructions if not paper else None),
+    )
+
+    return HTMLResponse(content=html_doc)
+
+
 @router.patch("/assignments/{assignment_id}", response_model=AssignmentResponse)
 async def update_assignment(
     assignment_id: str,
@@ -368,6 +448,10 @@ async def update_assignment(
         assignment.instructions = payload.instructions
     if payload.resourceUrl is not None:
         assignment.resource_url = payload.resourceUrl
+    if payload.resources is not None:
+        assignment.resources = merge_resources(
+            None, [link.model_dump() for link in payload.resources]
+        )
     if payload.estimatedMinutes is not None:
         assignment.estimated_minutes = payload.estimatedMinutes
     if payload.dueDate is not None:

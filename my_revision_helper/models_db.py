@@ -304,6 +304,11 @@ class Paper(Base):
     topics = Column(JSON)  # List of strings
     week_label = Column(String)  # e.g. "Week 1"
     year_group = Column(String)
+    # Prerequisite links belonging to the material itself, e.g. the Khan Academy
+    # video to watch before attempting it. Held on the paper rather than the
+    # assignment so they travel with it every time it is set.
+    # [{"url": str, "label": str, "kind": str}]
+    resources = Column(JSON)
     source_file_id = Column(String, ForeignKey("stored_files.id"), nullable=True)
     full_text = Column(Text)  # Everything extracted from the document
     question_text = Column(Text)  # Student-safe portion (answer key removed)
@@ -369,7 +374,10 @@ class Assignment(Base):
     subject = Column(String, nullable=False)
     paper_id = Column(String, ForeignKey("papers.id"), nullable=True)
     instructions = Column(Text)
-    resource_url = Column(String)  # e.g. a Khan Academy link from the workbook
+    resource_url = Column(String)  # Legacy single link; read as a fallback
+    # One-off links for this setting only. The paper's own resources are shown
+    # first; these are appended.
+    resources = Column(JSON)
     estimated_minutes = Column(Integer)
     due_date = Column(DateTime)
     week_label = Column(String)

@@ -236,6 +236,7 @@ export function Button({
   disabled,
   type = 'button',
   className = '',
+  title,
 }: {
   children: ReactNode
   onClick?: () => void
@@ -244,6 +245,7 @@ export function Button({
   disabled?: boolean
   type?: 'button' | 'submit'
   className?: string
+  title?: string
 }) {
   const variants = {
     primary: 'bg-slate-900 text-white hover:bg-slate-800 disabled:bg-slate-400',
@@ -258,6 +260,7 @@ export function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={`inline-flex items-center justify-center gap-2 rounded-xl font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${variants[variant]} ${sizes[size]} ${className}`}
     >
       {children}

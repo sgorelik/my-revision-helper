@@ -33,6 +33,7 @@ from ..schemas.study import (
 )
 from ..services.file_store import FileTooLargeError, get_file, store_uploads
 from ..services.paper_parser import guess_title, parse_paper
+from ..services.worksheet import normalise_resources
 from ..services.scope import build_scope, ensure_user_row, restrict_to_owner
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,10 @@ def _list_item(paper: Paper, question_count: int) -> PaperListItem:
         totalMarks=paper.total_marks,
         estimatedMinutes=paper.estimated_minutes,
         hasAnswerKey=bool(paper.answer_key_text),
+        # An answer key inside the document means the document cannot be handed
+        # over as-is; the generated worksheet is used instead.
+        originalIsStudentSafe=not paper.answer_key_text,
+        resources=normalise_resources(paper.resources),
         parseStatus=paper.parse_status or "pending",
         createdAt=paper.created_at.isoformat() if paper.created_at else "",
     )
@@ -74,6 +79,10 @@ async def upload_paper(
     weekLabel: str = Form(""),
     yearGroup: str = Form(""),
     pastedText: str = Form(""),
+    # A prerequisite link can be attached at upload time, which is when the
+    # parent has the Khan Academy tab open next to the worksheet.
+    resourceUrl: str = Form(""),
+    resourceLabel: str = Form(""),
     files: List[UploadFile] = File(default_factory=list),
     user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
     db: Optional[Session] = Depends(get_db),
@@ -143,6 +152,9 @@ async def upload_paper(
         topics=parsed.topics or [],
         week_label=weekLabel.strip() or None,
         year_group=yearGroup.strip() or None,
+        resources=normalise_resources(
+            [{"url": resourceUrl, "label": resourceLabel}] if resourceUrl.strip() else []
+        ),
         source_file_id=file_ids[0] if file_ids else None,
         full_text=full_text,
         question_text=parsed.question_text,
@@ -294,6 +306,10 @@ async def update_paper(
         paper.topics = payload.topics
     if payload.estimatedMinutes is not None:
         paper.estimated_minutes = payload.estimatedMinutes
+    if payload.resources is not None:
+        paper.resources = normalise_resources(
+            [link.model_dump() for link in payload.resources]
+        )
 
     db.commit()
     return await get_paper(paper_id, False, user, db, session_id)

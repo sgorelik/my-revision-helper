@@ -325,7 +325,12 @@ export default function DashboardPage() {
         <StatTile
           label="Work completed"
           value={`${progress.assignmentsDone}/${progress.assignmentsTotal}`}
-          hint={`${progress.assignmentsDueThisWeek} due this week`}
+          hint={
+            progress.assignmentsOverdue > 0
+              ? `${progress.assignmentsOverdue} overdue · ${progress.assignmentsDueThisWeek} due this week`
+              : `${progress.assignmentsDueThisWeek} due this week`
+          }
+          tone={progress.assignmentsOverdue > 0 ? 'text-rose-600' : 'text-slate-900'}
         />
         <StatTile
           label="Average score"

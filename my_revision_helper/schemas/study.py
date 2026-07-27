@@ -100,6 +100,19 @@ class StudyPlanResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ResourceLink(BaseModel):
+    """
+    An instructional link, e.g. the video to watch before attempting a paper.
+
+    `kind` distinguishes what the student is being asked to do with it, so the
+    label can be rendered sensibly: watch, read, practise.
+    """
+
+    url: str
+    label: Optional[str] = None
+    kind: str = "watch"
+
+
 class PaperQuestionResponse(BaseModel):
     """
     A question as shown to a student.
@@ -129,6 +142,10 @@ class PaperListItem(BaseModel):
     totalMarks: Optional[int] = None
     estimatedMinutes: Optional[int] = None
     hasAnswerKey: bool = False
+    # Whether the uploaded document itself may be given to a student. False when
+    # an answer key was found inside it, which is the usual case for a workbook.
+    originalIsStudentSafe: bool = False
+    resources: List[ResourceLink] = Field(default_factory=list)
     parseStatus: str = "pending"
     createdAt: str
 
@@ -152,6 +169,7 @@ class PaperUpdateRequest(BaseModel):
     weekLabel: Optional[str] = None
     topics: Optional[List[str]] = None
     estimatedMinutes: Optional[int] = None
+    resources: Optional[List[ResourceLink]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +185,7 @@ class AssignmentCreateRequest(BaseModel):
     paperId: Optional[str] = None
     instructions: Optional[str] = None
     resourceUrl: Optional[str] = None
+    resources: Optional[List[ResourceLink]] = None
     estimatedMinutes: Optional[int] = None
     dueDate: Optional[str] = None  # ISO date
     weekLabel: Optional[str] = None
@@ -185,6 +204,7 @@ class AssignmentUpdateRequest(BaseModel):
     title: Optional[str] = None
     instructions: Optional[str] = None
     resourceUrl: Optional[str] = None
+    resources: Optional[List[ResourceLink]] = None
     estimatedMinutes: Optional[int] = None
     dueDate: Optional[str] = None
     weekLabel: Optional[str] = None
@@ -211,6 +231,9 @@ class AssignmentResponse(BaseModel):
     paperId: Optional[str] = None
     instructions: Optional[str] = None
     resourceUrl: Optional[str] = None
+    # The paper's own links followed by this assignment's extras, already merged
+    # so the client does not have to know the precedence rule.
+    resources: List[ResourceLink] = Field(default_factory=list)
     estimatedMinutes: Optional[int] = None
     dueDate: Optional[str] = None
     weekLabel: Optional[str] = None
@@ -351,6 +374,7 @@ class ChildProgressResponse(BaseModel):
     assignmentsTotal: int = 0
     assignmentsDone: int = 0
     assignmentsDueThisWeek: int = 0
+    assignmentsOverdue: int = 0
     minutesLoggedThisWeek: int = 0
     weeklyMinutesTarget: int = 0
     averagePercentage: Optional[float] = None

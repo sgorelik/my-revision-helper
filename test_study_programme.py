@@ -11,8 +11,10 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import types
 import zipfile
+from datetime import datetime, timedelta
 from typing import Any, List
 
 import pytest
@@ -1117,6 +1119,239 @@ def test_marking_is_not_reachable_from_another_account(client, child, stub_marki
 
     assert other.get(f"/api/markings/{marking['id']}").status_code == 404
     assert len(other.get("/api/markings").json()["items"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# The printable worksheet
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_normalise_resources_accepts_strings_and_dicts():
+    from my_revision_helper.services.worksheet import normalise_resources
+
+    links = normalise_resources(
+        [
+            "https://example.com/one",
+            {"url": "https://example.com/two", "label": "Watch me", "kind": "watch"},
+        ]
+    )
+
+    assert [l["url"] for l in links] == ["https://example.com/one", "https://example.com/two"]
+    # A bare string still gets a usable label rather than an empty heading.
+    assert links[0]["label"]
+    assert links[1]["label"] == "Watch me"
+
+
+@pytest.mark.unit
+def test_normalise_resources_rejects_non_http_urls():
+    """A link is rendered into a page, so javascript: and data: must not survive."""
+    from my_revision_helper.services.worksheet import normalise_resources
+
+    links = normalise_resources(
+        [
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "  https://example.com/ok  ",
+        ]
+    )
+
+    assert [l["url"] for l in links] == ["https://example.com/ok"]
+
+
+@pytest.mark.unit
+def test_merge_resources_puts_the_papers_links_first_and_dedupes():
+    from my_revision_helper.services.worksheet import merge_resources
+
+    merged = merge_resources(
+        [{"url": "https://example.com/video", "label": "Paper link"}],
+        [{"url": "https://example.com/extra", "label": "Assignment link"}],
+        "https://example.com/video",  # legacy field repeating the paper's link
+    )
+
+    assert [l["url"] for l in merged] == [
+        "https://example.com/video",
+        "https://example.com/extra",
+    ]
+    assert merged[0]["label"] == "Paper link"
+
+
+@pytest.mark.unit
+def test_worksheet_escapes_question_text():
+    from my_revision_helper.services.worksheet import render_worksheet
+
+    question = types.SimpleNamespace(
+        number="1",
+        order_index=0,
+        question_text="Solve <script>alert(1)</script> for x",
+        marks=2,
+        session_label=None,
+    )
+
+    html_doc = render_worksheet(
+        title="Sheet", subject="Mathematics", questions=[question]
+    )
+
+    assert "<script>alert(1)</script>" not in html_doc
+    assert "&lt;script&gt;" in html_doc
+
+
+@pytest.mark.unit
+def test_worksheet_gives_more_answer_space_to_bigger_questions():
+    """A four-mark question needs room to work in; a one-mark question does not."""
+    from my_revision_helper.services.worksheet import render_worksheet
+
+    def height(marks):
+        question = types.SimpleNamespace(
+            number="1", order_index=0, question_text="Q", marks=marks, session_label=None
+        )
+        doc = render_worksheet(title="S", subject="Mathematics", questions=[question])
+        return int(re.search(r"min-height:(\d+)mm", doc).group(1))
+
+    assert height(1) < height(5)
+
+
+@pytest.mark.integration
+def test_worksheet_never_contains_the_answer_key(client, child):
+    """
+    The whole reason this endpoint exists. The uploaded document carries its
+    answer key, so the worksheet is generated from the parsed questions instead.
+    """
+    paper, assignment = _assign_workbook(client, child)
+
+    response = client.get(f"/api/assignments/{assignment['id']}/worksheet")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+    body = response.text
+
+    # Every stored expected answer must be absent.
+    from my_revision_helper.database import SessionLocal
+    from my_revision_helper.models_db import PaperQuestion
+
+    db = SessionLocal()
+    answers = [
+        q.expected_answer
+        for q in db.query(PaperQuestion).filter(PaperQuestion.paper_id == paper["id"]).all()
+        if q.expected_answer and len(q.expected_answer.strip()) > 6
+    ]
+    db.close()
+
+    assert answers, "the fixture workbook should have parsed answers to check against"
+    for answer in answers:
+        assert answer.strip() not in body
+
+    assert "Answer Key" not in body
+    # The questions themselves are present, so this is not passing by being empty.
+    assert "Simplify" in body or "question" in body.lower()
+
+
+@pytest.mark.integration
+def test_worksheet_prints_the_papers_prerequisite_link(client, child):
+    """A printed worksheet has to carry the link, or it is lost off-screen."""
+    paper = client.post(
+        "/api/papers",
+        data={
+            "subject": "Mathematics",
+            "title": "With a video",
+            "resourceUrl": "https://www.khanacademy.org/math/indices",
+            "resourceLabel": "Watch this first",
+        },
+        files={"files": ("wb.txt", WORKBOOK_TEXT.encode(), "text/plain")},
+    ).json()
+
+    assert [l["url"] for l in paper["resources"]] == [
+        "https://www.khanacademy.org/math/indices"
+    ]
+
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Indices",
+            "subject": "Mathematics",
+            "assignmentType": "paper",
+            "paperId": paper["id"],
+        },
+    ).json()
+
+    # The link is inherited by the assignment without being restated.
+    assert [l["url"] for l in assignment["resources"]] == [
+        "https://www.khanacademy.org/math/indices"
+    ]
+
+    body = client.get(f"/api/assignments/{assignment['id']}/worksheet").text
+
+    # Readable URL for typing, and a QR code for scanning off paper.
+    assert "khanacademy.org/math/indices" in body
+    assert "Watch this first" in body
+    assert "<svg" in body
+
+
+@pytest.mark.integration
+def test_worksheet_is_not_reachable_from_another_account(client, child):
+    _, assignment = _assign_workbook(client, child)
+
+    from fastapi.testclient import TestClient
+
+    from my_revision_helper.api import app
+
+    other = TestClient(app)
+    other.cookies.set("session_id", "someone-else")
+
+    assert other.get(f"/api/assignments/{assignment['id']}/worksheet").status_code == 404
+
+
+@pytest.mark.integration
+def test_paper_flags_whether_the_original_may_be_handed_over(client):
+    """
+    A workbook with a key inside it cannot be given to a student as-is; the
+    library needs to say so rather than leaving the parent to guess.
+    """
+    with_key = client.post(
+        "/api/papers",
+        data={"subject": "Mathematics", "title": "Has a key"},
+        files={"files": ("wb.txt", WORKBOOK_TEXT.encode(), "text/plain")},
+    ).json()
+    assert with_key["hasAnswerKey"] is True
+    assert with_key["originalIsStudentSafe"] is False
+
+    without_key = client.post(
+        "/api/papers",
+        data={"subject": "Mathematics", "title": "No key"},
+        files={"files": ("plain.txt", b"1. What is 2 + 2?\n2. What is 3 + 3?", "text/plain")},
+    ).json()
+    assert without_key["hasAnswerKey"] is False
+    assert without_key["originalIsStudentSafe"] is True
+
+
+@pytest.mark.integration
+def test_overdue_work_is_counted_separately(client, child):
+    client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Late one",
+            "subject": "Mathematics",
+            "assignmentType": "task",
+            "verification": "self_report",
+            "dueDate": (datetime.now() - timedelta(days=3)).date().isoformat(),
+        },
+    )
+    client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Due today, not late yet",
+            "subject": "Mathematics",
+            "assignmentType": "task",
+            "verification": "self_report",
+            "dueDate": datetime.now().date().isoformat(),
+        },
+    )
+
+    progress = client.get(f"/api/children/{child}/progress").json()
+    assert progress["assignmentsOverdue"] == 1
 
 
 @pytest.mark.integration
