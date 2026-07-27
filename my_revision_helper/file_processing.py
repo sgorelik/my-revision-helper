@@ -4,13 +4,14 @@ File processing utilities for My Revision Helper.
 This module handles:
 - Image compression for OpenAI Vision API
 - Text extraction from images (OCR via OpenAI)
-- Text extraction from PDFs
+- Text extraction from PDFs, including scans with no text layer
 - Text extraction from PowerPoint presentations
 - File processing orchestration
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 from io import BytesIO
@@ -100,13 +101,110 @@ def compress_image(image_bytes: bytes, max_size: int = MAX_OPENAI_IMAGE_SIZE, qu
         return image_bytes
 
 
-async def extract_text_from_pdf(file: UploadFile) -> Optional[str]:
+# A page with less real text than this is treated as a picture of a page rather
+# than a page of text. Scanner apps produce PDFs with no text layer at all, and
+# a page carrying only a figure caption is not worth trying to read either.
+MIN_CHARS_PER_TEXT_PAGE = 40
+
+# Scanned pages cost an OpenAI Vision call each, so a very long document is read
+# up to this point rather than running up an unbounded bill on a mis-upload.
+MAX_OCR_PAGES = 30
+
+# How many pages to read at once. Sequential OCR of a 15-page scan would keep a
+# child waiting a couple of minutes.
+OCR_CONCURRENCY = 4
+
+# 2x gives roughly 144 dpi, which is enough for handwriting without producing
+# images so large they need compressing again.
+PDF_RENDER_SCALE = 2.0
+
+
+def _render_pdf_page(contents: bytes, page_index: int, scale: float = PDF_RENDER_SCALE) -> Optional[bytes]:
+    """
+    Render one PDF page to JPEG bytes.
+
+    Uses pypdfium2, which arrives with pdfplumber and needs no system packages,
+    so scanned PDFs work on a plain Python image.
+    """
+    try:
+        import pypdfium2
+
+        document = pypdfium2.PdfDocument(BytesIO(contents))
+        try:
+            page = document[page_index]
+            image = page.render(scale=scale).to_pil()
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+            buffer = BytesIO()
+            image.save(buffer, format="JPEG", quality=80, optimize=True)
+            return buffer.getvalue()
+        finally:
+            document.close()
+    except ImportError:
+        logger.error("pypdfium2 not installed - cannot read scanned PDFs")
+        return None
+    except Exception as e:
+        logger.warning(f"Could not render PDF page {page_index + 1}: {e}")
+        return None
+
+
+async def _ocr_pdf_pages(
+    contents: bytes, page_numbers: List[int], client: Any, filename: str
+) -> Dict[int, str]:
+    """
+    Read scanned pages with OpenAI Vision, several at a time.
+
+    Returns page number -> text for the pages that could be read.
+    """
+    if not page_numbers or client is None:
+        return {}
+
+    if len(page_numbers) > MAX_OCR_PAGES:
+        logger.warning(
+            f"{filename} has {len(page_numbers)} scanned pages; reading the first {MAX_OCR_PAGES}"
+        )
+        page_numbers = page_numbers[:MAX_OCR_PAGES]
+
+    limit = asyncio.Semaphore(OCR_CONCURRENCY)
+
+    async def read(page_num: int):
+        async with limit:
+            rendered = await asyncio.to_thread(_render_pdf_page, contents, page_num - 1)
+            if not rendered:
+                return page_num, None
+            text = await asyncio.to_thread(
+                _vision_ocr, rendered, client, f"{filename} page {page_num}"
+            )
+            return page_num, text
+
+    logger.info(f"Reading {len(page_numbers)} scanned page(s) of {filename} with Vision")
+    results = await asyncio.gather(*(read(n) for n in page_numbers), return_exceptions=True)
+
+    out: Dict[int, str] = {}
+    for result in results:
+        if isinstance(result, Exception):
+            logger.warning(f"A page of {filename} could not be read: {result}")
+            continue
+        page_num, text = result
+        if text and text.strip():
+            out[page_num] = text.strip()
+
+    return out
+
+
+async def extract_text_from_pdf(file: UploadFile, client: Any = None) -> Optional[str]:
     """
     Extract text from a PDF file.
-    
+
+    Handles both kinds of PDF that turn up. One is a real document with a text
+    layer, read directly. The other is a scan or a phone photo — anything from a
+    scanner app is a picture of a page with no text in it at all — which is read
+    with OpenAI Vision, page by page, when a client is available.
+
     Args:
         file: Uploaded PDF file
-        
+        client: OpenAI client, needed only to read scanned pages
+
     Returns:
         Extracted text, or None if extraction fails
     """
@@ -121,23 +219,55 @@ async def extract_text_from_pdf(file: UploadFile) -> Optional[str]:
             logger.warning(f"PDF {file.filename} is large ({len(contents) / (1024*1024):.1f}MB), processing in chunks...")
         
         # Use pdfplumber to extract text (processes all pages)
+        page_text_by_number: Dict[int, str] = {}
+        scanned_pages: List[int] = []
+
         with pdfplumber.open(BytesIO(contents)) as pdf:
-            text_parts = []
             total_pages = len(pdf.pages)
             logger.info(f"Processing PDF {file.filename} with {total_pages} pages")
             
             for page_num, page in enumerate(pdf.pages, 1):
                 try:
                     page_text = page.extract_text()
-                    if page_text:
-                        text_parts.append(f"--- Page {page_num} ---\n{page_text}")
                 except Exception as e:
                     logger.warning(f"Error extracting text from page {page_num} of {file.filename}: {e}")
+                    page_text = None
+
+                if page_text and len(page_text.strip()) >= MIN_CHARS_PER_TEXT_PAGE:
+                    page_text_by_number[page_num] = page_text.strip()
                     continue
-            
-            extracted_text = "\n\n".join(text_parts)
-            logger.info(f"Extracted {len(extracted_text)} characters from PDF {file.filename} ({total_pages} pages)")
-            return extracted_text if extracted_text else None
+
+                # Not enough text to be a text page. If there is something drawn
+                # on it, it is a scan and worth reading properly; a genuinely
+                # blank page is skipped.
+                if page.images or page_text:
+                    scanned_pages.append(page_num)
+                    if page_text and page_text.strip():
+                        page_text_by_number[page_num] = page_text.strip()
+
+        if scanned_pages and client is not None:
+            for page_num, text in (
+                await _ocr_pdf_pages(contents, scanned_pages, client, file.filename or "PDF")
+            ).items():
+                # OCR of a scan beats the stray characters the text layer had.
+                page_text_by_number[page_num] = text
+        elif scanned_pages:
+            logger.warning(
+                f"{file.filename} has {len(scanned_pages)} page(s) with no text layer "
+                "and no OpenAI client was available to read them"
+            )
+
+        text_parts = [
+            f"--- Page {num} ---\n{page_text_by_number[num]}"
+            for num in sorted(page_text_by_number)
+        ]
+
+        extracted_text = "\n\n".join(text_parts)
+        logger.info(
+            f"Extracted {len(extracted_text)} characters from PDF {file.filename} "
+            f"({total_pages} pages, {len(scanned_pages)} scanned)"
+        )
+        return extracted_text if extracted_text else None
             
     except ImportError:
         logger.error("pdfplumber not installed - cannot extract text from PDFs")
@@ -352,53 +482,72 @@ async def extract_text_from_xlsx(file: UploadFile) -> Optional[str]:
         return None
 
 
-async def extract_text_from_image(file: UploadFile, client: Any) -> Optional[str]:
+def _strip_code_fence(text: Optional[str]) -> Optional[str]:
     """
-    Extract text from an uploaded image using OpenAI Vision API.
-    
-    Args:
-        file: Uploaded file (should be an image)
-        client: OpenAI client instance
-        
-    Returns:
-        Extracted text, or None if extraction fails
+    Remove a ``` wrapper the model sometimes puts around a whole page.
+
+    Left in, it becomes noise in the marking prompt and can swallow the first
+    line of a page.
+    """
+    if not text:
+        return text
+
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+
+    lines = stripped.split("\n")
+    # Drop the opening fence, along with any language tag on it.
+    lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
+OCR_SYSTEM_PROMPT = (
+    "You are a text extraction assistant. Extract all text from the image accurately, "
+    "preserving formatting and structure. The image is often a photo or scan of school "
+    "work, which may be handwritten: transcribe it faithfully, including question "
+    "numbers, working out and answers, and write maths in plain text. If part is "
+    "illegible, write [illegible] rather than guessing. Return only the extracted text, "
+    "no explanations."
+)
+
+
+def _vision_ocr(contents: bytes, client: Any, label: str) -> Optional[str]:
+    """
+    Read the text in one image with OpenAI Vision.
+
+    Synchronous and takes bytes rather than an upload, so it serves both a
+    directly uploaded photo and a page rendered out of a scanned PDF.
     """
     try:
-        # Read file content
-        contents = await file.read()
         original_size = len(contents)
-        
+
         # Check file size - compress if too large for OpenAI
         if original_size > MAX_OPENAI_IMAGE_SIZE:
-            logger.info(f"Image {file.filename} is large ({original_size / (1024*1024):.1f}MB), compressing...")
+            logger.info(f"Image {label} is large ({original_size / (1024*1024):.1f}MB), compressing...")
             try:
                 contents = compress_image(contents, max_size=MAX_OPENAI_IMAGE_SIZE)
-                logger.info(f"Compressed {file.filename}: {original_size / (1024*1024):.1f}MB -> {len(contents) / (1024*1024):.1f}MB")
+                logger.info(f"Compressed {label}: {original_size / (1024*1024):.1f}MB -> {len(contents) / (1024*1024):.1f}MB")
             except ImportError:
                 logger.warning("Pillow not available - cannot compress image. Install Pillow for large image support.")
-                if original_size > MAX_OPENAI_IMAGE_SIZE:
-                    logger.error(f"Image {file.filename} too large ({original_size / (1024*1024):.1f}MB) and compression unavailable")
-                    return None
+                logger.error(f"Image {label} too large ({original_size / (1024*1024):.1f}MB) and compression unavailable")
+                return None
             except Exception as e:
-                logger.error(f"Failed to compress image {file.filename}: {e}", exc_info=True)
-                if original_size > MAX_OPENAI_IMAGE_SIZE:
-                    return None
-        
-        # Encode to base64 for OpenAI Vision API
+                logger.error(f"Failed to compress image {label}: {e}", exc_info=True)
+                return None
+
         base64_image = base64.b64encode(contents).decode('utf-8')
-        
+
         # After compression, images are always JPEG
         # (compression converts all formats to JPEG for consistency and size)
         image_format = "image/jpeg"
-        
-        # Use OpenAI Vision API to extract text
+
         response = client.chat.completions.create(
             model="gpt-4o",  # gpt-4o has vision capabilities
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are a text extraction assistant. Extract all text from the image accurately, preserving formatting and structure. Return only the extracted text, no explanations.",
-                },
+                {"role": "system", "content": OCR_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
@@ -417,14 +566,34 @@ async def extract_text_from_image(file: UploadFile, client: Any) -> Optional[str
             ],
             max_tokens=2000,
         )
-        
-        extracted_text = response.choices[0].message.content
-        logger.info(f"Extracted {len(extracted_text)} characters from image {file.filename}")
+
+        extracted_text = _strip_code_fence(response.choices[0].message.content)
+        logger.info(f"Extracted {len(extracted_text or '')} characters from {label}")
         return extracted_text
-        
+
     except Exception as e:
-        logger.error(f"Failed to extract text from image {file.filename}: {e}", exc_info=True)
+        logger.error(f"Failed to extract text from {label}: {e}", exc_info=True)
         return None
+
+
+async def extract_text_from_image(file: UploadFile, client: Any) -> Optional[str]:
+    """
+    Extract text from an uploaded image using OpenAI Vision API.
+    
+    Args:
+        file: Uploaded file (should be an image)
+        client: OpenAI client instance
+        
+    Returns:
+        Extracted text, or None if extraction fails
+    """
+    try:
+        contents = await file.read()
+    except Exception as e:
+        logger.error(f"Failed to read image {file.filename}: {e}", exc_info=True)
+        return None
+
+    return _vision_ocr(contents, client, f"image {file.filename}")
 
 
 async def process_uploaded_files(files: List[UploadFile], openai_client: Any) -> Dict[str, str]:
@@ -456,7 +625,8 @@ async def process_uploaded_files(files: List[UploadFile], openai_client: Any) ->
             # Handle PDF files
             if "pdf" in content_type or filename_lower.endswith('.pdf'):
                 logger.info(f"Processing PDF file: {filename}")
-                text = await extract_text_from_pdf(file)
+                # The client is passed so a scanned PDF can be read as images.
+                text = await extract_text_from_pdf(file, openai_client)
                 if text:
                     extracted_texts[filename] = text
                 else:

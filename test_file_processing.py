@@ -167,6 +167,129 @@ class TestCompressImage:
         assert result == invalid_image
 
 
+def _scanned_pdf_bytes(pages: int = 2) -> bytes:
+    """
+    Build a PDF that is pictures of pages with no text layer.
+
+    This is what a scanner app produces, and what broke handing in work: text
+    extraction finds nothing at all, so the page has to be read as an image.
+    """
+    from PIL import Image, ImageDraw
+
+    images = []
+    for page in range(pages):
+        image = Image.new("RGB", (620, 850), "white")
+        draw = ImageDraw.Draw(image)
+        # Drawn, not written as text, so there is nothing to extract.
+        draw.rectangle((60, 60, 560, 120), outline="black", width=3)
+        draw.line((60, 200 + page * 20, 560, 200 + page * 20), fill="black", width=2)
+        images.append(image)
+
+    buffer = BytesIO()
+    images[0].save(buffer, format="PDF", save_all=True, append_images=images[1:])
+    return buffer.getvalue()
+
+
+class TestScannedPDFs:
+    """A scanned PDF has no text layer, so its pages are read as images."""
+
+    @pytest.mark.requires_pil
+    @pytest.mark.asyncio
+    async def test_a_scanned_pdf_is_read_through_vision(self):
+        content = _scanned_pdf_bytes(pages=2)
+        file = create_mock_upload_file("scan.pdf", content, "application/pdf")
+
+        client = MagicMock()
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="2. Answer: 490"))]
+        )
+
+        result = await extract_text_from_pdf(file, client)
+
+        assert result is not None
+        assert "490" in result
+        # One Vision call per scanned page, and both pages present.
+        assert client.chat.completions.create.call_count == 2
+        assert "--- Page 1 ---" in result and "--- Page 2 ---" in result
+
+    @pytest.mark.requires_pil
+    @pytest.mark.asyncio
+    async def test_without_a_client_a_scan_yields_nothing_rather_than_breaking(self):
+        """The old behaviour, kept for when no OpenAI key is configured."""
+        content = _scanned_pdf_bytes(pages=1)
+        file = create_mock_upload_file("scan.pdf", content, "application/pdf")
+
+        assert await extract_text_from_pdf(file, None) is None
+
+    @pytest.mark.requires_pil
+    @pytest.mark.asyncio
+    async def test_pages_that_already_have_text_are_not_sent_to_vision(self):
+        """Vision costs a call per page, so it is only used where it is needed."""
+        content = _scanned_pdf_bytes(pages=1)
+        file = create_mock_upload_file("scan.pdf", content, "application/pdf")
+
+        client = MagicMock()
+        client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="read from the image"))]
+        )
+
+        long_text = "This page has a proper text layer with plenty of characters on it."
+        with patch("pdfplumber.open") as fake_open:
+            page = MagicMock()
+            page.extract_text.return_value = long_text
+            page.images = [MagicMock()]
+            fake_open.return_value.__enter__.return_value.pages = [page]
+
+            result = await extract_text_from_pdf(file, client)
+
+        assert long_text in result
+        client.chat.completions.create.assert_not_called()
+
+    @pytest.mark.requires_pil
+    @pytest.mark.asyncio
+    async def test_one_unreadable_page_does_not_lose_the_others(self):
+        content = _scanned_pdf_bytes(pages=3)
+        file = create_mock_upload_file("scan.pdf", content, "application/pdf")
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [
+            MagicMock(choices=[MagicMock(message=MagicMock(content="page one text"))]),
+            RuntimeError("Vision fell over"),
+            MagicMock(choices=[MagicMock(message=MagicMock(content="page three text"))]),
+        ]
+
+        result = await extract_text_from_pdf(file, client)
+
+        assert "page one text" in result
+        assert "page three text" in result
+
+    @pytest.mark.requires_pil
+    def test_page_rendering_produces_an_image(self):
+        from my_revision_helper.file_processing import _render_pdf_page
+
+        rendered = _render_pdf_page(_scanned_pdf_bytes(pages=1), 0)
+
+        assert rendered is not None
+        # JPEG magic bytes.
+        assert rendered[:2] == b"\xff\xd8"
+
+    def test_rendering_a_file_that_is_not_a_pdf_is_not_an_error(self):
+        from my_revision_helper.file_processing import _render_pdf_page
+
+        assert _render_pdf_page(b"not a pdf at all", 0) is None
+
+    def test_a_code_fence_around_a_page_is_removed(self):
+        """The model sometimes wraps a whole page in ```, which is just noise."""
+        from my_revision_helper.file_processing import _strip_code_fence
+
+        assert _strip_code_fence("```plaintext\nQuestion 1\nAnswer: 4\n```") == (
+            "Question 1\nAnswer: 4"
+        )
+        assert _strip_code_fence("Question 1") == "Question 1"
+        # A fence inside the page is left alone.
+        assert "```" in _strip_code_fence("Working:\n```\nx = 2\n```\nmore")
+
+
 class TestExtractTextFromPDF:
     """Tests for extract_text_from_pdf function."""
     
