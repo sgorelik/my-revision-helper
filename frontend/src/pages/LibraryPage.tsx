@@ -18,6 +18,264 @@ import {
   subjectIcon,
 } from '../components/ui'
 
+/** What we know about one file sitting in the staging list, before upload. */
+type StagedFile = {
+  file: File
+  subject: string
+  weekLabel: string
+  resourceUrl: string
+  status: 'pending' | 'uploading' | 'ok' | 'failed'
+  error?: string
+  title?: string
+}
+
+/**
+ * Guess the subject from a filename in the browser, so the parent sees what will
+ * happen before uploading rather than after.
+ *
+ * The server does this too and its answer is authoritative; this is only to fill
+ * the form in. Kept to whole-word matches for the same reason as the server:
+ * short aliases would otherwise match almost any filename.
+ */
+const SUBJECT_HINTS: [RegExp, string][] = [
+  [/\b(maths?|mathematics)\b/i, 'Mathematics'],
+  [/\benglish\s*(lit|literature)\b/i, 'English Literature'],
+  [/\benglish\b/i, 'English'],
+  [/\b(bio|biology)\b/i, 'Biology'],
+  [/\b(chem|chemistry)\b/i, 'Chemistry'],
+  [/\b(phys|physics)\b/i, 'Physics'],
+  [/\b(geog|geography)\b/i, 'Geography'],
+  [/\b(hist|history)\b/i, 'History'],
+  [/\b(pre|rs|re)\b/i, 'PRE'],
+  [/\b(cs|computing|computer\s*science)\b/i, 'Computer Science'],
+  [/\bfrench\b/i, 'French'],
+  [/\bspanish\b/i, 'Spanish'],
+  [/\blatin\b/i, 'Latin'],
+]
+
+function guessSubject(filename: string): string {
+  const stem = filename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ')
+  for (const [pattern, subject] of SUBJECT_HINTS) {
+    if (pattern.test(stem)) return subject
+  }
+  return ''
+}
+
+function guessWeek(filename: string): string {
+  const match = filename.match(/(?:week|wk)[\s_-]*(\d{1,2})/i)
+  return match ? `Week ${Number(match[1])}` : ''
+}
+
+/**
+ * Upload a folder of workbooks in one go.
+ *
+ * Each file becomes its own library item. Subject and week are guessed from the
+ * filename and shown for correction before uploading, because a term's worth of
+ * workbooks is named after them and retyping that is the slow part of setup.
+ */
+function BulkUploadPanel({ onUploaded }: { onUploaded: () => void }) {
+  const [subjects, setSubjects] = useState<string[]>([])
+  const [staged, setStaged] = useState<StagedFile[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.getSubjects().then(setSubjects).catch(() => setSubjects([]))
+  }, [])
+
+  const stage = (files: File[]) => {
+    setError(null)
+    setStaged((current) => [
+      ...current,
+      ...files
+        // Dropping the same folder twice should not create duplicates.
+        .filter((file) => !current.some((s) => s.file.name === file.name))
+        .map((file) => ({
+          file,
+          subject: guessSubject(file.name),
+          weekLabel: guessWeek(file.name),
+          resourceUrl: '',
+          status: 'pending' as const,
+        })),
+    ])
+  }
+
+  const update = (name: string, patch: Partial<StagedFile>) =>
+    setStaged((current) => current.map((s) => (s.file.name === name ? { ...s, ...patch } : s)))
+
+  const uploadAll = async () => {
+    const queue = staged.filter((s) => s.status === 'pending' || s.status === 'failed')
+    if (queue.length === 0) return
+
+    setUploading(true)
+    setError(null)
+    setStaged((current) =>
+      current.map((s) =>
+        queue.some((q) => q.file.name === s.file.name) ? { ...s, status: 'uploading' } : s,
+      ),
+    )
+
+    try {
+      const meta: Record<string, Record<string, string>> = {}
+      queue.forEach((s) => {
+        meta[s.file.name] = {
+          subject: s.subject,
+          weekLabel: s.weekLabel,
+          resourceUrl: s.resourceUrl,
+        }
+      })
+
+      const response = await api.bulkUploadPapers({ files: queue.map((s) => s.file), meta })
+
+      response.items.forEach((item) => {
+        const patch: Partial<StagedFile> = { status: item.status, error: item.error || undefined }
+        // Only echo back what the server resolved. Assigning undefined here would
+        // blank the subject on a failed row and leave its select uncontrolled.
+        if (item.paper) {
+          patch.title = item.paper.title
+          patch.subject = item.paper.subject
+        }
+        update(item.filename, patch)
+      })
+      onUploaded()
+    } catch (e) {
+      // The request itself failed, so nothing was uploaded; put them back so
+      // they can be retried rather than silently vanishing.
+      setStaged((current) =>
+        current.map((s) => (s.status === 'uploading' ? { ...s, status: 'failed' } : s)),
+      )
+      setError(e instanceof ApiError ? e.message : 'Upload failed')
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  const pending = staged.filter((s) => s.status === 'pending' || s.status === 'failed').length
+  const done = staged.filter((s) => s.status === 'ok').length
+
+  return (
+    <Card className="space-y-4">
+      <div>
+        <label className="mb-1.5 block text-sm font-medium text-slate-700">
+          Choose several files
+        </label>
+        <input
+          type="file"
+          multiple
+          accept=".docx,.pdf,.pptx,.xlsx,.txt,.md,image/*"
+          onChange={(e) => {
+            stage(Array.from(e.target.files || []))
+            e.target.value = ''
+          }}
+          className="block w-full cursor-pointer rounded-xl border border-slate-300 p-2 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-sm file:text-white hover:file:bg-slate-800"
+        />
+        <p className="mt-1.5 text-xs text-slate-500">
+          Each file becomes its own paper. Subject and week are read from the file name where
+          possible — check them below before uploading.
+        </p>
+      </div>
+
+      {staged.length > 0 && (
+        <div className="space-y-2">
+          {staged.map((item) => (
+            <div
+              key={item.file.name}
+              className={`rounded-xl border p-3 ${
+                item.status === 'ok'
+                  ? 'border-emerald-200 bg-emerald-50'
+                  : item.status === 'failed'
+                    ? 'border-rose-200 bg-rose-50'
+                    : 'border-slate-200'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">
+                  {item.file.name}
+                </span>
+                {item.status === 'ok' && (
+                  <span className="text-xs font-medium text-emerald-700">Added</span>
+                )}
+                {item.status === 'uploading' && (
+                  <span className="text-xs text-slate-500">Reading…</span>
+                )}
+                {item.status === 'failed' && (
+                  <span className="text-xs font-medium text-rose-700">Failed</span>
+                )}
+                {item.status !== 'uploading' && (
+                  <button
+                    onClick={() =>
+                      setStaged((current) =>
+                        current.filter((s) => s.file.name !== item.file.name),
+                      )
+                    }
+                    className="text-slate-400 hover:text-slate-700"
+                    aria-label={`Remove ${item.file.name}`}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+
+              {item.status !== 'ok' && (
+                <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_1fr_2fr]">
+                  <select
+                    value={item.subject}
+                    onChange={(e) => update(item.file.name, { subject: e.target.value })}
+                    className={`w-full rounded-lg border p-2 text-xs focus:outline-none ${
+                      item.subject ? 'border-slate-300' : 'border-amber-400 bg-amber-50'
+                    }`}
+                  >
+                    <option value="">Subject needed…</option>
+                    {subjects.map((name) => (
+                      <option key={name}>{name}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={item.weekLabel}
+                    onChange={(e) => update(item.file.name, { weekLabel: e.target.value })}
+                    placeholder="Week"
+                    className="w-full rounded-lg border border-slate-300 p-2 text-xs focus:outline-none"
+                  />
+                  <input
+                    value={item.resourceUrl}
+                    onChange={(e) => update(item.file.name, { resourceUrl: e.target.value })}
+                    placeholder="Watch-first link (optional)"
+                    className="w-full rounded-lg border border-slate-300 p-2 text-xs focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {item.error && <p className="mt-2 text-xs text-rose-700">{item.error}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {error && <ErrorBanner message={error} />}
+
+      {staged.length > 0 && (
+        <div className="flex items-center gap-3">
+          <Button onClick={uploadAll} disabled={uploading || pending === 0} className="flex-1">
+            {uploading
+              ? 'Reading and parsing…'
+              : pending === 0
+                ? 'All uploaded'
+                : `Upload ${pending} file${pending === 1 ? '' : 's'}`}
+          </Button>
+          {done > 0 && (
+            <Button
+              variant="ghost"
+              onClick={() => setStaged((current) => current.filter((s) => s.status !== 'ok'))}
+            >
+              Clear {done} done
+            </Button>
+          )}
+        </div>
+      )}
+    </Card>
+  )
+}
+
 function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
   const [subjects, setSubjects] = useState<string[]>([])
   const [subject, setSubject] = useState('Mathematics')
@@ -410,6 +668,7 @@ export default function LibraryPage() {
   const [assigning, setAssigning] = useState<Paper | null>(null)
   const [editingLinks, setEditingLinks] = useState<Paper | null>(null)
   const [toast, setToast] = useState<string | null>(null)
+  const [uploadMode, setUploadMode] = useState<'bulk' | 'single'>('bulk')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -456,8 +715,35 @@ export default function LibraryPage() {
       </div>
 
       <section>
-        <SectionTitle title="Add a paper" />
-        <UploadPanel onUploaded={load} />
+        <SectionTitle
+          title="Add papers"
+          subtitle="Upload a whole folder at once, or add one with full control"
+          action={
+            <div className="flex gap-1 rounded-xl bg-slate-100 p-1">
+              <button
+                onClick={() => setUploadMode('bulk')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  uploadMode === 'bulk' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+                }`}
+              >
+                Many files
+              </button>
+              <button
+                onClick={() => setUploadMode('single')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                  uploadMode === 'single' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500'
+                }`}
+              >
+                One paper
+              </button>
+            </div>
+          }
+        />
+        {uploadMode === 'bulk' ? (
+          <BulkUploadPanel onUploaded={load} />
+        ) : (
+          <UploadPanel onUploaded={load} />
+        )}
       </section>
 
       <section>

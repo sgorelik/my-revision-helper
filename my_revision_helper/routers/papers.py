@@ -9,6 +9,7 @@ from the database instead.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -25,12 +26,15 @@ from ..file_processing import process_uploaded_files
 from ..llm import get_openai_client, get_reasoning_model
 from ..models_db import Assignment, Paper, PaperQuestion
 from ..schemas.study import (
+    BulkUploadItem,
+    BulkUploadResponse,
     PaperDetailResponse,
     PaperListItem,
     PaperListResponse,
     PaperQuestionResponse,
     PaperUpdateRequest,
 )
+from ..subjects import normalise_subject, subject_from_filename, week_from_filename
 from ..services.file_store import FileTooLargeError, get_file, store_uploads
 from ..services.paper_parser import guess_title, parse_paper
 from ..services.worksheet import normalise_resources
@@ -71,6 +75,112 @@ def _list_item(paper: Paper, question_count: int) -> PaperListItem:
     )
 
 
+async def _create_paper(
+    db: Session,
+    scope,
+    *,
+    files: List[UploadFile],
+    pasted_text: str = "",
+    title: str = "",
+    subject: str,
+    paper_type: str = "workbook",
+    week_label: str = "",
+    year_group: str = "",
+    resources: Optional[List[Dict[str, str]]] = None,
+) -> Paper:
+    """
+    Store one document and parse it into a paper.
+
+    Shared by the single and bulk upload endpoints. Raises HTTPException for
+    problems the caller should report per file, and does not commit: the caller
+    decides the transaction boundary, which is what lets a bulk upload keep the
+    files that worked.
+    """
+    try:
+        file_ids, _ = await store_uploads(
+            db, files, user_id=scope.user_id, session_id=scope.session_id
+        )
+    except FileTooLargeError as e:
+        raise HTTPException(status_code=413, detail=str(e))
+
+    openai_client = get_openai_client()
+    extracted = await process_uploaded_files(files, openai_client)
+
+    text_parts: List[str] = []
+    if pasted_text.strip():
+        text_parts.append(pasted_text.strip())
+    text_parts.extend(extracted.values())
+
+    full_text = "\n\n".join(text_parts).strip()
+    if not full_text:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not read any text from the upload. Supported: docx, pdf, pptx, xlsx, images.",
+        )
+
+    parsed = parse_paper(
+        full_text,
+        subject=subject,
+        client=openai_client,
+        model=get_reasoning_model() if openai_client else None,
+    )
+
+    resolved_title = (
+        title.strip()
+        or parsed.title
+        or guess_title(full_text)
+        or next(iter(extracted.keys()), None)
+        or f"{subject} paper"
+    )
+
+    paper = Paper(
+        id=str(uuid.uuid4()),
+        user_id=scope.user_id,
+        session_id=scope.session_id,
+        title=resolved_title,
+        subject=subject,
+        paper_type=paper_type or "workbook",
+        topics=parsed.topics or [],
+        week_label=week_label.strip() or None,
+        year_group=year_group.strip() or None,
+        resources=normalise_resources(resources or []),
+        source_file_id=file_ids[0] if file_ids else None,
+        full_text=full_text,
+        question_text=parsed.question_text,
+        answer_key_text=parsed.answer_key_text,
+        total_marks=parsed.total_marks,
+        estimated_minutes=parsed.estimated_minutes,
+        parse_status=parsed.parse_status,
+        parse_error=parsed.parse_error,
+        parsed_at=datetime.utcnow(),
+    )
+    db.add(paper)
+    db.flush()
+
+    for question in parsed.questions:
+        db.add(
+            PaperQuestion(
+                id=str(uuid.uuid4()),
+                paper_id=paper.id,
+                session_label=question.session_label,
+                band=question.band,
+                number=question.number,
+                order_index=question.order_index,
+                question_text=question.question_text,
+                marks=question.marks,
+                topic=question.topic,
+                expected_answer=question.expected_answer,
+                marking_notes=question.marking_notes,
+            )
+        )
+
+    logger.info(
+        f"Parsed paper {paper.id} ({paper.title}) with {len(parsed.questions)} questions, "
+        f"answer key {'found' if parsed.answer_key_text else 'not found'}"
+    )
+    return paper
+
+
 @router.post("/papers", response_model=PaperDetailResponse, status_code=201)
 async def upload_paper(
     title: str = Form(""),
@@ -103,97 +213,143 @@ async def upload_paper(
     scope = build_scope(user, session_id)
     ensure_user_row(db, user)
 
-    # Keep the original bytes before extraction consumes the upload stream.
-    try:
-        file_ids, _ = await store_uploads(
-            db, files, user_id=scope.user_id, session_id=scope.session_id
-        )
-    except FileTooLargeError as e:
-        raise HTTPException(status_code=413, detail=str(e))
-
-    openai_client = get_openai_client()
-    extracted = await process_uploaded_files(files, openai_client)
-
-    text_parts: List[str] = []
-    if pastedText.strip():
-        text_parts.append(pastedText.strip())
-    for filename, text in extracted.items():
-        text_parts.append(text)
-
-    full_text = "\n\n".join(text_parts).strip()
-    if not full_text:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not read any text from the upload. Supported: docx, pdf, pptx, xlsx, images.",
-        )
-
-    parsed = parse_paper(
-        full_text,
+    paper = await _create_paper(
+        db,
+        scope,
+        files=files,
+        pasted_text=pastedText,
+        title=title,
         subject=subject,
-        client=openai_client,
-        model=get_reasoning_model() if openai_client else None,
+        paper_type=paperType,
+        week_label=weekLabel,
+        year_group=yearGroup,
+        resources=[{"url": resourceUrl, "label": resourceLabel}] if resourceUrl.strip() else [],
     )
-
-    resolved_title = (
-        title.strip()
-        or parsed.title
-        or guess_title(full_text)
-        or next(iter(extracted.keys()), None)
-        or f"{subject} paper"
-    )
-
-    paper = Paper(
-        id=str(uuid.uuid4()),
-        user_id=scope.user_id,
-        session_id=scope.session_id,
-        title=resolved_title,
-        subject=subject,
-        paper_type=paperType or "workbook",
-        topics=parsed.topics or [],
-        week_label=weekLabel.strip() or None,
-        year_group=yearGroup.strip() or None,
-        resources=normalise_resources(
-            [{"url": resourceUrl, "label": resourceLabel}] if resourceUrl.strip() else []
-        ),
-        source_file_id=file_ids[0] if file_ids else None,
-        full_text=full_text,
-        question_text=parsed.question_text,
-        answer_key_text=parsed.answer_key_text,
-        total_marks=parsed.total_marks,
-        estimated_minutes=parsed.estimated_minutes,
-        parse_status=parsed.parse_status,
-        parse_error=parsed.parse_error,
-        parsed_at=datetime.utcnow(),
-    )
-    db.add(paper)
-    db.flush()
-
-    for question in parsed.questions:
-        db.add(
-            PaperQuestion(
-                id=str(uuid.uuid4()),
-                paper_id=paper.id,
-                session_label=question.session_label,
-                band=question.band,
-                number=question.number,
-                order_index=question.order_index,
-                question_text=question.question_text,
-                marks=question.marks,
-                topic=question.topic,
-                expected_answer=question.expected_answer,
-                marking_notes=question.marking_notes,
-            )
-        )
 
     db.commit()
     db.refresh(paper)
 
-    logger.info(
-        f"Stored paper {paper.id} ({paper.title}) with {len(parsed.questions)} questions, "
-        f"answer key {'found' if parsed.answer_key_text else 'not found'}"
-    )
-
     return await get_paper(paper.id, False, user, db, session_id)
+
+
+@router.post("/papers/bulk", response_model=BulkUploadResponse)
+async def bulk_upload_papers(
+    files: List[UploadFile] = File(...),
+    # Per-file overrides keyed by filename, as JSON:
+    #   {"Maths_Week1.docx": {"subject": "Mathematics", "resourceUrl": "https://…"}}
+    # Keyed rather than positional because the browser does not guarantee that
+    # the order of a FormData file list survives the round trip.
+    meta: str = Form(""),
+    subject: str = Form(""),
+    weekLabel: str = Form(""),
+    yearGroup: str = Form(""),
+    paperType: str = Form("workbook"),
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+) -> BulkUploadResponse:
+    """
+    Add many documents at once, one paper per file.
+
+    Setting up a term means uploading a folder of workbooks, so each file becomes
+    its own library item with its own parse result. Failures are isolated: a file
+    that cannot be read is reported against its own name and does not roll back
+    the ones that succeeded.
+
+    Subject and week are inferred from each filename when not given, since
+    workbooks are usually named after them.
+    """
+    db = _require_db(db)
+
+    if not files:
+        raise HTTPException(status_code=400, detail="Choose at least one file")
+
+    try:
+        overrides: Dict[str, Dict[str, str]] = json.loads(meta) if meta.strip() else {}
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="meta was not valid JSON")
+
+    scope = build_scope(user, session_id)
+    ensure_user_row(db, user)
+
+    results: List[BulkUploadItem] = []
+
+    for upload in files:
+        filename = upload.filename or "upload"
+        per_file = overrides.get(filename, {}) if isinstance(overrides, dict) else {}
+
+        resolved_subject = (
+            (per_file.get("subject") or "").strip()
+            or subject.strip()
+            or subject_from_filename(filename)
+        )
+        if not resolved_subject:
+            results.append(
+                BulkUploadItem(
+                    filename=filename,
+                    status="failed",
+                    error="Could not tell which subject this is. Set it and retry.",
+                )
+            )
+            continue
+
+        resolved_subject = normalise_subject(resolved_subject) or resolved_subject
+        resource_url = (per_file.get("resourceUrl") or "").strip()
+
+        try:
+            paper = await _create_paper(
+                db,
+                scope,
+                files=[upload],
+                title=(per_file.get("title") or "").strip(),
+                subject=resolved_subject,
+                paper_type=paperType,
+                week_label=(per_file.get("weekLabel") or "").strip()
+                or weekLabel.strip()
+                or (week_from_filename(filename) or ""),
+                year_group=yearGroup,
+                resources=(
+                    [{"url": resource_url, "label": per_file.get("resourceLabel") or ""}]
+                    if resource_url
+                    else []
+                ),
+            )
+            # Committed per file so one bad document cannot discard the good ones.
+            db.commit()
+            db.refresh(paper)
+
+            results.append(
+                BulkUploadItem(
+                    filename=filename,
+                    status="ok",
+                    paper=_list_item(
+                        paper,
+                        db.query(PaperQuestion)
+                        .filter(PaperQuestion.paper_id == paper.id)
+                        .count(),
+                    ),
+                )
+            )
+        except HTTPException as e:
+            db.rollback()
+            results.append(
+                BulkUploadItem(filename=filename, status="failed", error=str(e.detail))
+            )
+        except Exception as e:
+            db.rollback()
+            logger.exception(f"Bulk upload failed for {filename}")
+            results.append(
+                BulkUploadItem(
+                    filename=filename, status="failed", error=f"Could not process this file: {e}"
+                )
+            )
+
+    succeeded = sum(1 for r in results if r.status == "ok")
+    logger.info(f"Bulk upload: {succeeded} of {len(results)} files added")
+
+    return BulkUploadResponse(
+        items=results, succeeded=succeeded, failed=len(results) - succeeded
+    )
 
 
 @router.get("/papers", response_model=PaperListResponse)

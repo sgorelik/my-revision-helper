@@ -7,6 +7,7 @@
 
 import type {
   Assignment,
+  BulkUploadResponse,
   Child,
   ChildProgress,
   ChildSubject,
@@ -241,6 +242,28 @@ export const api = {
     form.append('resourceLabel', payload.resourceLabel || '')
     payload.files.forEach((file) => form.append('files', file))
     return upload<Paper>('/papers', form)
+  },
+
+  /**
+   * Add many documents at once, one paper per file.
+   *
+   * `meta` carries per-file overrides keyed by filename; anything omitted is
+   * inferred server-side from the filename.
+   */
+  bulkUploadPapers: (payload: {
+    files: File[]
+    meta?: Record<string, { subject?: string; title?: string; weekLabel?: string; resourceUrl?: string; resourceLabel?: string }>
+    subject?: string
+    weekLabel?: string
+    yearGroup?: string
+  }) => {
+    const form = new FormData()
+    payload.files.forEach((file) => form.append('files', file))
+    form.append('meta', JSON.stringify(payload.meta || {}))
+    form.append('subject', payload.subject || '')
+    form.append('weekLabel', payload.weekLabel || '')
+    form.append('yearGroup', payload.yearGroup || '')
+    return upload<BulkUploadResponse>('/papers/bulk', form)
   },
 
   updatePaper: (

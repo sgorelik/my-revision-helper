@@ -34,7 +34,8 @@ from ..models_db import (
     Submission,
     TopicMastery,
 )
-from ..routers.assignments import FINISHED_STATUSES, serialise_assignment, week_bounds
+from ..clock import local_today, to_local_date, week_bounds, week_bounds_utc
+from ..routers.assignments import FINISHED_STATUSES, serialise_assignment
 from ..routers.children import _child_response, _plan_response
 from ..schemas.study import (
     ChildProgressResponse,
@@ -100,11 +101,11 @@ def _streak_days(db: Session, child_id: str) -> int:
     if not submissions:
         return 0
 
-    active_days = {s.submitted_at.date() for s in submissions if s.submitted_at}
+    active_days = {to_local_date(s.submitted_at) for s in submissions if s.submitted_at}
     if not active_days:
         return 0
 
-    today = datetime.utcnow().date()
+    today = local_today()
     cursor = today if today in active_days else today - timedelta(days=1)
 
     streak = 0
@@ -166,14 +167,18 @@ async def get_child_progress(
     )
 
     week_start, week_end = week_bounds()
+    # submitted_at is recorded in UTC, so the week has to be expressed that way
+    # to compare against it; due dates below are calendar dates and use the
+    # local bounds.
+    utc_week_start, utc_week_end = week_bounds_utc()
 
     minutes_this_week = 0
     for submission in (
         db.query(Submission)
         .filter(
             Submission.child_id == child_id,
-            Submission.submitted_at >= week_start,
-            Submission.submitted_at < week_end,
+            Submission.submitted_at >= utc_week_start,
+            Submission.submitted_at < utc_week_end,
         )
         .all()
     ):
@@ -252,7 +257,7 @@ async def get_child_progress(
 
     # Overdue is compared on the date, not the instant. Work set for today is not
     # late during the evening it was set, which a timestamp comparison would say.
-    today = datetime.now().date()
+    today = local_today()
     overdue = [a for a in outstanding if a.due_date and a.due_date.date() < today]
 
     percentages = [m.percentage for m in markings if m.percentage is not None]

@@ -1122,6 +1122,84 @@ def test_marking_is_not_reachable_from_another_account(client, child, stub_marki
 
 
 # ---------------------------------------------------------------------------
+# Reading metadata off filenames
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_subject_is_read_from_the_real_workbook_filenames():
+    """The files actually being uploaded are named after their subject."""
+    from my_revision_helper.subjects import subject_from_filename
+
+    assert subject_from_filename("Chemistry_Week1_Workbook.docx") == "Chemistry"
+    assert subject_from_filename("Maths_Week1_Workbook.docx") == "Mathematics"
+    assert subject_from_filename("Biology_Week1_Workbook.docx") == "Biology"
+    # A more specific subject wins over the one-word match.
+    assert subject_from_filename("english lit week 3 paper.pdf") == "English Literature"
+
+
+@pytest.mark.unit
+def test_subject_inference_declines_rather_than_guessing_wrong():
+    """
+    Matching on substrings would make short aliases catch almost anything, so a
+    filename with no subject in it has to return nothing.
+    """
+    from my_revision_helper.subjects import subject_from_filename
+
+    assert subject_from_filename("scan001.jpg") is None
+    assert subject_from_filename("Yuri_Study_Tracker.xlsx") is None
+    # "chem" must not match inside "Chemical".
+    assert subject_from_filename("Chemical_reactions_notes.docx") is None
+    assert subject_from_filename(None) is None
+
+
+@pytest.mark.unit
+def test_week_label_is_normalised_from_the_filename():
+    from my_revision_helper.subjects import week_from_filename
+
+    assert week_from_filename("Maths_Week1_Workbook.docx") == "Week 1"
+    assert week_from_filename("2024 CS Paper wk4.pdf") == "Week 4"
+    assert week_from_filename("english lit week 12.pdf") == "Week 12"
+    assert week_from_filename("no numbers here.docx") is None
+
+
+# ---------------------------------------------------------------------------
+# Dates as the household sees them
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_local_date_follows_the_household_not_the_server():
+    """
+    Railway runs in UTC. During BST that is an hour behind, so work finished at
+    half past midnight would otherwise be filed under the previous day.
+    """
+    from my_revision_helper.clock import to_local_date
+
+    # 23:30 UTC on 27 July is 00:30 on 28 July in London.
+    assert to_local_date(datetime(2026, 7, 27, 23, 30)) == datetime(2026, 7, 28).date()
+    # In winter the two agree.
+    assert to_local_date(datetime(2026, 1, 27, 23, 30)) == datetime(2026, 1, 27).date()
+    assert to_local_date(None) is None
+
+
+@pytest.mark.unit
+def test_week_starts_on_monday_in_both_frames():
+    from my_revision_helper.clock import week_bounds, week_bounds_utc
+
+    # A Wednesday.
+    start, end = week_bounds(datetime(2026, 7, 29, 14, 0))
+    assert start == datetime(2026, 7, 27)
+    assert end == datetime(2026, 8, 3)
+
+    # The same week as UTC instants: London midnight in summer is 23:00 UTC the
+    # day before, so timestamps compare correctly.
+    utc_start, utc_end = week_bounds_utc(datetime(2026, 7, 29, 14, 0))
+    assert utc_start == datetime(2026, 7, 26, 23, 0)
+    assert utc_end == datetime(2026, 8, 2, 23, 0)
+
+
+# ---------------------------------------------------------------------------
 # The printable worksheet
 # ---------------------------------------------------------------------------
 
@@ -1352,6 +1430,105 @@ def test_overdue_work_is_counted_separately(client, child):
 
     progress = client.get(f"/api/children/{child}/progress").json()
     assert progress["assignmentsOverdue"] == 1
+
+
+@pytest.mark.integration
+def test_bulk_upload_makes_one_paper_per_file_and_infers_the_subject(client):
+    """Setting up a term is uploading a folder, not filling in a form five times."""
+    files = [
+        ("files", ("Maths_Week1_Workbook.txt", WORKBOOK_TEXT.encode(), "text/plain")),
+        ("files", ("Chemistry_Week1_Workbook.txt", b"1. Name the products.", "text/plain")),
+        ("files", ("Biology_Week2_Workbook.txt", b"1. Define osmosis.", "text/plain")),
+    ]
+
+    response = client.post("/api/papers/bulk", files=files)
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["succeeded"] == 3
+    assert body["failed"] == 0
+
+    by_name = {item["filename"]: item for item in body["items"]}
+    assert by_name["Maths_Week1_Workbook.txt"]["paper"]["subject"] == "Mathematics"
+    assert by_name["Chemistry_Week1_Workbook.txt"]["paper"]["subject"] == "Chemistry"
+    assert by_name["Biology_Week2_Workbook.txt"]["paper"]["subject"] == "Biology"
+
+    # The week comes off the filename too.
+    assert by_name["Maths_Week1_Workbook.txt"]["paper"]["weekLabel"] == "Week 1"
+    assert by_name["Biology_Week2_Workbook.txt"]["paper"]["weekLabel"] == "Week 2"
+
+    # Each is its own library item, not one merged paper.
+    titles = {item["paper"]["id"] for item in body["items"]}
+    assert len(titles) == 3
+
+
+@pytest.mark.integration
+def test_one_unreadable_file_does_not_lose_the_others(client):
+    """
+    The acceptance criterion for bulk upload: a single failure neither blocks the
+    others nor loses them.
+    """
+    files = [
+        ("files", ("Maths_Week1.txt", WORKBOOK_TEXT.encode(), "text/plain")),
+        # Nothing extractable, so this one cannot become a paper.
+        ("files", ("Physics_Week1.zip", b"PK\x03\x04 not really a zip", "application/zip")),
+        ("files", ("Biology_Week1.txt", b"1. Define osmosis.", "text/plain")),
+    ]
+
+    body = client.post("/api/papers/bulk", files=files).json()
+
+    assert body["succeeded"] == 2
+    assert body["failed"] == 1
+
+    by_name = {item["filename"]: item for item in body["items"]}
+    assert by_name["Physics_Week1.zip"]["status"] == "failed"
+    assert by_name["Physics_Week1.zip"]["error"]
+    # The good ones survived and were committed.
+    assert by_name["Maths_Week1.txt"]["status"] == "ok"
+    assert by_name["Biology_Week1.txt"]["status"] == "ok"
+
+    library = client.get("/api/papers").json()
+    stored = {p["title"] for p in library["items"]}
+    assert by_name["Maths_Week1.txt"]["paper"]["title"] in stored
+
+
+@pytest.mark.integration
+def test_bulk_upload_reports_files_whose_subject_cannot_be_guessed(client):
+    body = client.post(
+        "/api/papers/bulk",
+        files=[("files", ("scan001.txt", b"1. Something.", "text/plain"))],
+    ).json()
+
+    assert body["failed"] == 1
+    assert "subject" in body["items"][0]["error"].lower()
+
+
+@pytest.mark.integration
+def test_bulk_upload_accepts_per_file_subject_and_link(client):
+    """The per-file override is how a parent fixes a failed guess and retries."""
+    meta = json.dumps(
+        {
+            "scan001.txt": {
+                "subject": "Maths",
+                "title": "Scanned homework",
+                "resourceUrl": "https://www.khanacademy.org/math/fractions",
+                "resourceLabel": "Watch: fractions",
+            }
+        }
+    )
+
+    body = client.post(
+        "/api/papers/bulk",
+        data={"meta": meta},
+        files=[("files", ("scan001.txt", b"1. Add the fractions.", "text/plain"))],
+    ).json()
+
+    assert body["succeeded"] == 1
+    paper = body["items"][0]["paper"]
+    # The alias was normalised on the way in.
+    assert paper["subject"] == "Mathematics"
+    assert paper["title"] == "Scanned homework"
+    assert paper["resources"][0]["url"] == "https://www.khanacademy.org/math/fractions"
 
 
 @pytest.mark.integration

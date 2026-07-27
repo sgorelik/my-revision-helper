@@ -588,10 +588,3 @@ async def child_todo_list(
     )
 
 
-def week_bounds(reference: Optional[datetime] = None) -> tuple[datetime, datetime]:
-    """Monday 00:00 to the following Monday 00:00 containing `reference`."""
-    now = reference or datetime.utcnow()
-    start = (now - timedelta(days=now.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    return start, start + timedelta(days=7)

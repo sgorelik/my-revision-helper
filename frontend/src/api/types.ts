@@ -52,6 +52,20 @@ export interface StudyPlan {
   blocks: PlanBlock[]
 }
 
+/** The outcome for one file in a bulk upload, so failures can be retried alone. */
+export interface BulkUploadItem {
+  filename: string
+  status: 'ok' | 'failed'
+  paper?: Paper | null
+  error?: string | null
+}
+
+export interface BulkUploadResponse {
+  items: BulkUploadItem[]
+  succeeded: number
+  failed: number
+}
+
 /** A "watch this first" link. Belongs to the material, so it travels with it. */
 export interface ResourceLink {
   url: string

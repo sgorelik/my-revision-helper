@@ -162,6 +162,26 @@ class PaperDetailResponse(PaperListItem):
     parseError: Optional[str] = None
 
 
+class BulkUploadItem(BaseModel):
+    """
+    The outcome for one file in a bulk upload.
+
+    Reported per filename so a parent can see which of ten documents failed and
+    retry just that one, rather than being told the whole batch went wrong.
+    """
+
+    filename: str
+    status: str  # ok, failed
+    paper: Optional[PaperListItem] = None
+    error: Optional[str] = None
+
+
+class BulkUploadResponse(BaseModel):
+    items: List[BulkUploadItem]
+    succeeded: int
+    failed: int
+
+
 class PaperUpdateRequest(BaseModel):
     title: Optional[str] = None
     subject: Optional[str] = None
