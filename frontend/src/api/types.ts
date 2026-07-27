@@ -135,6 +135,22 @@ export interface MarkingSummary {
 
 export type AssignmentStatus = 'todo' | 'in_progress' | 'submitted' | 'marked' | 'done'
 
+export type TimerState = 'idle' | 'running' | 'paused' | 'stopped'
+
+export interface AssignmentTimer {
+  state: TimerState
+  /**
+   * Worked out server-side on every read, so a page that was closed mid-paper
+   * shows the right total when it comes back.
+   */
+  elapsedSeconds: number
+  pauseCount: number
+  startedAt?: string | null
+  stoppedAt?: string | null
+  /** What will be recorded against the work, rounded and capped. */
+  loggedMinutes?: number | null
+}
+
 export interface Assignment {
   id: string
   childId: string
@@ -161,6 +177,7 @@ export interface Assignment {
   completedAt?: string | null
   questionCount: number
   latestMarking?: MarkingSummary | null
+  timer: AssignmentTimer
 }
 
 export interface QuestionMark {
@@ -194,6 +211,10 @@ export interface Marking {
   markedBy: string
   markedAt?: string | null
   questionMarks: QuestionMark[]
+  /** How the sitting went, when it was timed rather than self-reported. */
+  minutesSpent?: number | null
+  timed: boolean
+  pauseCount: number
 }
 
 export interface MarkingListItem {

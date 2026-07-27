@@ -88,6 +88,19 @@ def main():
         ("assignments", "resources", "resources JSON"),
         # The day a piece of work is planned for, as opposed to its deadline
         ("assignments", "scheduled_date", "scheduled_date TIMESTAMP"),
+        # Timing a sitting: start, pause, finish, rather than guessing minutes
+        ("assignments", "timer_state", "timer_state VARCHAR DEFAULT 'idle'"),
+        ("assignments", "timer_started_at", "timer_started_at TIMESTAMP"),
+        (
+            "assignments",
+            "timer_accumulated_seconds",
+            "timer_accumulated_seconds INTEGER DEFAULT 0",
+        ),
+        ("assignments", "timer_pause_count", "timer_pause_count INTEGER DEFAULT 0"),
+        ("assignments", "timer_first_started_at", "timer_first_started_at TIMESTAMP"),
+        ("assignments", "timer_stopped_at", "timer_stopped_at TIMESTAMP"),
+        ("submissions", "timed", "timed BOOLEAN DEFAULT FALSE"),
+        ("submissions", "pause_count", "pause_count INTEGER DEFAULT 0"),
     ]
     
     all_good = True

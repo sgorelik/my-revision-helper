@@ -126,6 +126,9 @@ function AssignmentRow({ assignment }: { assignment: Assignment }) {
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
+        {/* A clock left running is easy to forget about once you navigate away. */}
+        {assignment.timer.state === 'running' && <Pill tone="green">Timing now</Pill>}
+        {assignment.timer.state === 'paused' && <Pill tone="amber">Paused</Pill>}
         {isTask && <Pill tone="violet">Tick off</Pill>}
         <Pill tone={assignment.isOverdue ? 'red' : due.tone}>{due.text}</Pill>
       </div>

@@ -248,6 +248,23 @@ class AssignmentMarkingSummary(BaseModel):
     markedAt: Optional[str] = None
 
 
+class AssignmentTimer(BaseModel):
+    """
+    The stopwatch for a sitting.
+
+    `elapsedSeconds` is worked out server-side on every read, so a client that
+    was closed mid-paper shows the right total when it comes back.
+    """
+
+    state: str = "idle"  # idle, running, paused, stopped
+    elapsedSeconds: int = 0
+    pauseCount: int = 0
+    startedAt: Optional[str] = None
+    stoppedAt: Optional[str] = None
+    # What would be recorded against the work, rounded and capped.
+    loggedMinutes: Optional[int] = None
+
+
 class AssignmentResponse(BaseModel):
     id: str
     childId: str
@@ -276,6 +293,7 @@ class AssignmentResponse(BaseModel):
     completedAt: Optional[str] = None
     questionCount: int = 0
     latestMarking: Optional[AssignmentMarkingSummary] = None
+    timer: AssignmentTimer = Field(default_factory=AssignmentTimer)
 
 
 class AssignmentListResponse(BaseModel):
@@ -352,6 +370,10 @@ class MarkingResponse(BaseModel):
     markedBy: str = "ai"
     markedAt: Optional[str] = None
     questionMarks: List[QuestionMarkResponse] = Field(default_factory=list)
+    # How the sitting went, when it was timed rather than self-reported.
+    minutesSpent: Optional[int] = None
+    timed: bool = False
+    pauseCount: int = 0
 
 
 class MarkingListItem(BaseModel):

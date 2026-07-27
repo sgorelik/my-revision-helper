@@ -340,6 +340,16 @@ export const api = {
 
   deleteAssignment: (assignmentId: string) => send<void>('DELETE', `/assignments/${assignmentId}`),
 
+  /**
+   * Drive the clock on a sitting.
+   *
+   * Returns the whole assignment because starting also moves it to "in progress".
+   */
+  assignmentTimer: (
+    assignmentId: string,
+    action: 'start' | 'pause' | 'resume' | 'stop' | 'reset',
+  ) => send<Assignment>('POST', `/assignments/${assignmentId}/timer/${action}`),
+
   completeTask: (assignmentId: string, payload: { minutesSpent?: number; note?: string }) =>
     send<Assignment>('POST', `/assignments/${assignmentId}/complete`, payload),
 

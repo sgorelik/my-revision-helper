@@ -1122,6 +1122,407 @@ def test_marking_is_not_reachable_from_another_account(client, child, stub_marki
 
 
 # ---------------------------------------------------------------------------
+# Timing a sitting
+# ---------------------------------------------------------------------------
+
+
+class _FakeAssignment:
+    """Just the timer fields, to test the arithmetic without a database."""
+
+    def __init__(self):
+        self.id = "fake"
+        self.status = "todo"
+        self.timer_state = "idle"
+        self.timer_started_at = None
+        self.timer_accumulated_seconds = 0
+        self.timer_pause_count = 0
+        self.timer_first_started_at = None
+        self.timer_stopped_at = None
+
+
+@pytest.mark.unit
+def test_paused_time_does_not_count_towards_the_total():
+    from my_revision_helper.services import timing
+
+    a = _FakeAssignment()
+    t0 = datetime(2026, 7, 27, 10, 0, 0)
+
+    timing.start(a, now=t0)
+    # Ten minutes of work.
+    timing.pause(a, now=t0 + timedelta(minutes=10))
+    # An hour away from the desk, which must not be counted.
+    timing.resume(a, now=t0 + timedelta(minutes=70))
+    # Five more minutes of work.
+    timing.stop(a, now=t0 + timedelta(minutes=75))
+
+    assert timing.elapsed_seconds(a) == 15 * 60
+    assert timing.logged_minutes(a) == 15
+    assert a.timer_pause_count == 1
+
+
+@pytest.mark.unit
+def test_elapsed_time_keeps_growing_while_running():
+    """
+    The total is derived, not stored, so a client that was closed mid-paper sees
+    the right time when it comes back rather than a frozen number.
+    """
+    from my_revision_helper.services import timing
+
+    a = _FakeAssignment()
+    t0 = datetime(2026, 7, 27, 10, 0, 0)
+
+    timing.start(a, now=t0)
+
+    assert timing.elapsed_seconds(a, now=t0 + timedelta(minutes=3)) == 180
+    assert timing.elapsed_seconds(a, now=t0 + timedelta(minutes=25)) == 1500
+    # Nothing was written down in the meantime.
+    assert a.timer_accumulated_seconds == 0
+
+
+@pytest.mark.unit
+def test_each_pause_is_counted_but_double_tapping_is_not():
+    from my_revision_helper.services import timing
+
+    a = _FakeAssignment()
+    t0 = datetime(2026, 7, 27, 10, 0, 0)
+    timing.start(a, now=t0)
+
+    for i in range(3):
+        timing.pause(a, now=t0 + timedelta(minutes=10 * i + 5))
+        # A second tap on pause, or another tab doing the same, is not a pause.
+        timing.pause(a, now=t0 + timedelta(minutes=10 * i + 6))
+        timing.resume(a, now=t0 + timedelta(minutes=10 * i + 10))
+
+    assert a.timer_pause_count == 3
+
+
+@pytest.mark.unit
+def test_restarting_a_running_timer_does_not_lose_time():
+    """A double tap on start must not reset the clock back to zero."""
+    from my_revision_helper.services import timing
+
+    a = _FakeAssignment()
+    t0 = datetime(2026, 7, 27, 10, 0, 0)
+
+    timing.start(a, now=t0)
+    timing.start(a, now=t0 + timedelta(minutes=5))
+
+    assert timing.elapsed_seconds(a, now=t0 + timedelta(minutes=6)) == 6 * 60
+
+
+@pytest.mark.unit
+def test_finishing_while_paused_is_allowed():
+    from my_revision_helper.services import timing
+
+    a = _FakeAssignment()
+    t0 = datetime(2026, 7, 27, 10, 0, 0)
+
+    timing.start(a, now=t0)
+    timing.pause(a, now=t0 + timedelta(minutes=8))
+    timing.stop(a, now=t0 + timedelta(minutes=30))
+
+    # Only the eight worked minutes count, not the wait before finishing.
+    assert timing.logged_minutes(a) == 8
+
+
+@pytest.mark.unit
+def test_a_forgotten_timer_cannot_distort_the_weekly_total():
+    from my_revision_helper.services import timing
+
+    a = _FakeAssignment()
+    t0 = datetime(2026, 7, 27, 10, 0, 0)
+
+    timing.start(a, now=t0)
+    # Left running overnight.
+    timing.stop(a, now=t0 + timedelta(hours=20))
+
+    assert timing.logged_minutes(a) == timing.MAX_LOGGED_MINUTES
+    # The raw measurement is still there to be looked at.
+    assert timing.elapsed_seconds(a) == 20 * 3600
+
+
+@pytest.mark.unit
+def test_untimed_work_reports_no_minutes():
+    from my_revision_helper.services import timing
+
+    assert timing.logged_minutes(_FakeAssignment()) is None
+
+
+@pytest.mark.unit
+def test_a_few_seconds_of_work_rounds_to_a_minute_not_zero():
+    from my_revision_helper.services import timing
+
+    a = _FakeAssignment()
+    t0 = datetime(2026, 7, 27, 10, 0, 0)
+    timing.start(a, now=t0)
+    timing.stop(a, now=t0 + timedelta(seconds=20))
+
+    assert timing.logged_minutes(a) == 1
+
+
+@pytest.mark.unit
+def test_actions_that_do_not_apply_are_refused():
+    from my_revision_helper.services import timing
+
+    a = _FakeAssignment()
+
+    with pytest.raises(timing.TimerError):
+        timing.pause(a)  # Never started
+    with pytest.raises(timing.TimerError):
+        timing.resume(a)  # Not paused
+    with pytest.raises(timing.TimerError):
+        timing.stop(a)  # Never started
+
+    t0 = datetime(2026, 7, 27, 10, 0, 0)
+    timing.start(a, now=t0)
+    timing.stop(a, now=t0 + timedelta(minutes=5))
+
+    with pytest.raises(timing.TimerError):
+        timing.start(a)  # Already finished
+
+    # Resetting clears the way for another attempt.
+    timing.reset(a)
+    timing.start(a, now=t0 + timedelta(hours=1))
+    assert a.timer_state == "running"
+    assert a.timer_pause_count == 0
+
+
+@pytest.mark.integration
+def test_starting_the_clock_marks_the_work_as_in_progress(client, child):
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Read chapter 3",
+            "subject": "English",
+            "assignmentType": "task",
+        },
+    ).json()
+    assert assignment["timer"]["state"] == "idle"
+    assert assignment["status"] == "todo"
+
+    started = client.post(f"/api/assignments/{assignment['id']}/timer/start").json()
+
+    assert started["timer"]["state"] == "running"
+    assert started["timer"]["startedAt"]
+    assert started["status"] == "in_progress"
+
+
+@pytest.mark.integration
+def test_the_clock_survives_being_reloaded(client, child):
+    """
+    The point of keeping time on the server: a child reloads the page, locks the
+    iPad, or moves device mid-paper, and the elapsed time is still right.
+    """
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Maths",
+            "subject": "Mathematics",
+            "assignmentType": "task",
+        },
+    ).json()
+
+    client.post(f"/api/assignments/{assignment['id']}/timer/start")
+
+    # Pretend four minutes passed, by moving the stored start back.
+    from my_revision_helper.database import SessionLocal
+    from my_revision_helper.models_db import Assignment as AssignmentRow
+
+    db = SessionLocal()
+    row = db.query(AssignmentRow).filter(AssignmentRow.id == assignment["id"]).first()
+    row.timer_started_at = row.timer_started_at - timedelta(minutes=4)
+    db.commit()
+    db.close()
+
+    # A completely fresh read, as a reloaded page would do.
+    reloaded = client.get(f"/api/assignments/{assignment['id']}").json()
+
+    assert reloaded["timer"]["state"] == "running"
+    assert 235 <= reloaded["timer"]["elapsedSeconds"] <= 245
+    assert reloaded["timer"]["loggedMinutes"] == 4
+
+
+@pytest.mark.integration
+def test_pausing_and_resuming_over_the_api_counts_the_pause(client, child):
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Maths",
+            "subject": "Mathematics",
+            "assignmentType": "task",
+        },
+    ).json()
+
+    client.post(f"/api/assignments/{assignment['id']}/timer/start")
+    paused = client.post(f"/api/assignments/{assignment['id']}/timer/pause").json()
+
+    assert paused["timer"]["state"] == "paused"
+    assert paused["timer"]["pauseCount"] == 1
+
+    # While paused the clock does not move.
+    first = client.get(f"/api/assignments/{assignment['id']}").json()["timer"]["elapsedSeconds"]
+    second = client.get(f"/api/assignments/{assignment['id']}").json()["timer"]["elapsedSeconds"]
+    assert first == second
+
+    resumed = client.post(f"/api/assignments/{assignment['id']}/timer/resume").json()
+    assert resumed["timer"]["state"] == "running"
+    # Resuming is not another pause.
+    assert resumed["timer"]["pauseCount"] == 1
+
+    finished = client.post(f"/api/assignments/{assignment['id']}/timer/stop").json()
+    assert finished["timer"]["state"] == "stopped"
+    assert finished["timer"]["stoppedAt"]
+
+
+@pytest.mark.integration
+def test_an_action_that_no_longer_applies_gets_a_clear_refusal(client, child):
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Maths",
+            "subject": "Mathematics",
+            "assignmentType": "task",
+        },
+    ).json()
+
+    response = client.post(f"/api/assignments/{assignment['id']}/timer/pause")
+    assert response.status_code == 409
+    assert "not running" in response.json()["detail"].lower()
+
+    assert client.post(f"/api/assignments/{assignment['id']}/timer/sprint").status_code == 400
+
+
+@pytest.mark.integration
+def test_completing_a_task_records_the_measured_time_not_the_typed_one(client, child):
+    """The whole point: nobody has to estimate how long it took."""
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Read for an hour",
+            "subject": "English",
+            "assignmentType": "task",
+        },
+    ).json()
+
+    client.post(f"/api/assignments/{assignment['id']}/timer/start")
+    client.post(f"/api/assignments/{assignment['id']}/timer/pause")
+    client.post(f"/api/assignments/{assignment['id']}/timer/resume")
+
+    from my_revision_helper.database import SessionLocal
+    from my_revision_helper.models_db import Assignment as AssignmentRow
+    from my_revision_helper.models_db import Submission as SubmissionRow
+
+    db = SessionLocal()
+    row = db.query(AssignmentRow).filter(AssignmentRow.id == assignment["id"]).first()
+    row.timer_accumulated_seconds = 22 * 60
+    db.commit()
+    db.close()
+
+    # A wildly wrong self-report, which should be ignored in favour of the clock.
+    done = client.post(
+        f"/api/assignments/{assignment['id']}/complete", json={"minutesSpent": 300}
+    ).json()
+
+    assert done["status"] == "done"
+    # Finishing the work also finishes the clock.
+    assert done["timer"]["state"] == "stopped"
+
+    db = SessionLocal()
+    submission = (
+        db.query(SubmissionRow).filter(SubmissionRow.assignment_id == assignment["id"]).first()
+    )
+    assert submission.minutes_spent == 22
+    assert submission.timed is True
+    assert submission.pause_count == 1
+    db.close()
+
+
+@pytest.mark.integration
+def test_a_typed_time_is_still_accepted_when_the_clock_was_never_used(client, child):
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Read for an hour",
+            "subject": "English",
+            "assignmentType": "task",
+        },
+    ).json()
+
+    client.post(f"/api/assignments/{assignment['id']}/complete", json={"minutesSpent": 45})
+
+    from my_revision_helper.database import SessionLocal
+    from my_revision_helper.models_db import Submission as SubmissionRow
+
+    db = SessionLocal()
+    submission = (
+        db.query(SubmissionRow).filter(SubmissionRow.assignment_id == assignment["id"]).first()
+    )
+    assert submission.minutes_spent == 45
+    assert submission.timed is False
+    db.close()
+
+
+@pytest.mark.integration
+def test_timed_minutes_reach_the_weekly_totals(client, child):
+    """Measured time has to land where self-reported time used to."""
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Read for an hour",
+            "subject": "English",
+            "assignmentType": "task",
+        },
+    ).json()
+
+    client.post(f"/api/assignments/{assignment['id']}/timer/start")
+
+    from my_revision_helper.database import SessionLocal
+    from my_revision_helper.models_db import Assignment as AssignmentRow
+
+    db = SessionLocal()
+    row = db.query(AssignmentRow).filter(AssignmentRow.id == assignment["id"]).first()
+    row.timer_accumulated_seconds = 35 * 60
+    row.timer_state = "paused"
+    row.timer_started_at = None
+    db.commit()
+    db.close()
+
+    client.post(f"/api/assignments/{assignment['id']}/complete", json={})
+
+    progress = client.get(f"/api/children/{child}/progress").json()
+    assert progress["minutesLoggedThisWeek"] == 35
+
+
+@pytest.mark.integration
+def test_someone_elses_timer_cannot_be_touched(client, child):
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Maths",
+            "subject": "Mathematics",
+            "assignmentType": "task",
+        },
+    ).json()
+
+    from fastapi.testclient import TestClient
+
+    from my_revision_helper.api import app
+
+    other = TestClient(app)
+    other.cookies.set("session_id", "not-mine")
+
+    assert other.post(f"/api/assignments/{assignment['id']}/timer/start").status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Links the documents already contain
 # ---------------------------------------------------------------------------
 

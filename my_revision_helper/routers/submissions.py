@@ -30,6 +30,7 @@ from ..schemas.study import (
     QuestionMarkOverrideRequest,
     QuestionMarkResponse,
 )
+from ..services import timing
 from ..services.file_store import FileTooLargeError, get_file, store_uploads
 from ..services.marking_service import (
     load_paper_questions,
@@ -78,6 +79,9 @@ def _marking_response(db: Session, marking: Marking) -> MarkingResponse:
         weakTopics=marking.weak_topics or [],
         markedBy=marking.marked_by or "ai",
         markedAt=marking.marked_at.isoformat() if marking.marked_at else None,
+        minutesSpent=submission.minutes_spent if submission else None,
+        timed=bool(submission.timed) if submission else False,
+        pauseCount=int(submission.pause_count or 0) if submission else 0,
         questionMarks=[
             QuestionMarkResponse(
                 id=qm.id,
@@ -161,11 +165,20 @@ async def submit_assignment(
             detail="Could not read any work from the upload. Try a clearer photo, or type your answers.",
         )
 
+    # Handing in ends the sitting, whether or not "finish" was pressed.
+    if assignment.timer_state in (timing.RUNNING, timing.PAUSED):
+        timing.stop(assignment)
+
+    measured = timing.logged_minutes(assignment)
+
     submission = Submission(
         id=str(uuid.uuid4()),
         assignment_id=assignment.id,
         child_id=assignment.child_id,
-        minutes_spent=minutesSpent,
+        # A measured time beats a typed one; the field is only a fallback now.
+        minutes_spent=measured if measured is not None else minutesSpent,
+        timed=measured is not None,
+        pause_count=int(assignment.timer_pause_count or 0),
         note=note or None,
         extracted_text=student_work,
         file_ids=file_ids,
@@ -201,7 +214,9 @@ async def submit_assignment(
             )
     except Exception as e:
         submission.status = "failed"
-        assignment.status = "todo"
+        # Back to where they were, not to untouched: the work was in fact done,
+        # and a timed sitting should not look as though it never happened.
+        assignment.status = "in_progress" if assignment.timer_first_started_at else "todo"
         db.commit()
         logger.error(f"Marking failed for submission {submission.id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Marking failed: {e}")

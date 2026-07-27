@@ -215,6 +215,13 @@ export default function MarkingPage() {
                 {marking.marksAwarded} of {marking.marksAvailable} marks
                 {marking.markedBy === 'parent' && ' · adjusted by parent'}
               </div>
+              {marking.minutesSpent != null && (
+                <div className="text-sm text-slate-500">
+                  {marking.timed ? 'Timed' : 'Logged'}: {marking.minutesSpent} min
+                  {marking.pauseCount > 0 &&
+                    ` · ${marking.pauseCount} pause${marking.pauseCount === 1 ? '' : 's'}`}
+                </div>
+              )}
             </div>
           </div>
 

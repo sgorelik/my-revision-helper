@@ -389,6 +389,21 @@ class Assignment(Base):
     verification = Column(String, default="upload")  # upload, self_report, timer, none
     status = Column(String, default="todo")  # todo, in_progress, submitted, marked, done
     sort_order = Column(Integer, default=0)
+
+    # Timing a sitting, so nobody has to estimate minutes afterwards.
+    #
+    # The clock is kept here rather than in the browser because a child will
+    # reload the page, lock the iPad, or move to a laptop mid-paper, and none of
+    # that should lose or fudge the time. Elapsed time is therefore always
+    # derived: accumulated_seconds covers finished stretches, and while running
+    # the live stretch is measured from timer_started_at.
+    timer_state = Column(String, default="idle")  # idle, running, paused, stopped
+    timer_started_at = Column(DateTime)  # Start of the current running stretch (UTC)
+    timer_accumulated_seconds = Column(Integer, default=0)
+    timer_pause_count = Column(Integer, default=0)
+    timer_first_started_at = Column(DateTime)  # When they first sat down
+    timer_stopped_at = Column(DateTime)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime)
@@ -407,6 +422,10 @@ class Submission(Base):
     assignment_id = Column(String, ForeignKey("assignments.id"), nullable=False)
     child_id = Column(String, ForeignKey("children.id"), nullable=False)
     minutes_spent = Column(Integer)
+    # Kept with the work rather than only on the assignment, so the record of
+    # how long it took survives the assignment being timed again.
+    timed = Column(Boolean, default=False)  # Measured rather than self-reported
+    pause_count = Column(Integer, default=0)
     note = Column(Text)  # Child's own comment
     extracted_text = Column(Text)  # OCR/text of the handed-in work
     file_ids = Column(JSON)  # List of stored_files ids

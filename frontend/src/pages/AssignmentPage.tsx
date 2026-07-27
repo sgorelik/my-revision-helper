@@ -76,6 +76,161 @@ function ResourceLinks({ resources }: { resources: ResourceLink[] }) {
   )
 }
 
+function clockFace(totalSeconds: number) {
+  const seconds = Math.max(0, Math.floor(totalSeconds))
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const rest = seconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(rest)}` : `${minutes}:${pad(rest)}`
+}
+
+/**
+ * Start, pause and finish a sitting, so nobody has to estimate minutes.
+ *
+ * The server owns the time. The display ticks locally between requests, but it
+ * counts forward from the elapsed total the server last reported rather than
+ * from a start timestamp, because the device's own clock may be wrong and every
+ * refresh has to agree with what will actually be recorded.
+ */
+function TestTimer({
+  assignment,
+  onChange,
+}: {
+  assignment: Assignment
+  onChange: (updated: Assignment) => void
+}) {
+  const { timer } = assignment
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  // The server's total, and the local moment it arrived.
+  const [anchor, setAnchor] = useState({ seconds: timer.elapsedSeconds, at: Date.now() })
+  const [shown, setShown] = useState(timer.elapsedSeconds)
+
+  useEffect(() => {
+    setAnchor({ seconds: timer.elapsedSeconds, at: Date.now() })
+    setShown(timer.elapsedSeconds)
+  }, [timer.elapsedSeconds, timer.state])
+
+  useEffect(() => {
+    if (timer.state !== 'running') return
+    const tick = window.setInterval(() => {
+      setShown(anchor.seconds + Math.round((Date.now() - anchor.at) / 1000))
+    }, 1000)
+    return () => window.clearInterval(tick)
+  }, [timer.state, anchor])
+
+  const act = async (action: 'start' | 'pause' | 'resume' | 'stop' | 'reset') => {
+    setBusy(action)
+    setError(null)
+    try {
+      onChange(await api.assignmentTimer(assignment.id, action))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The timer did not respond')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const running = timer.state === 'running'
+  const paused = timer.state === 'paused'
+  const finished = timer.state === 'stopped'
+
+  return (
+    <Card
+      className={
+        running
+          ? 'border-emerald-300 bg-emerald-50'
+          : paused
+            ? 'border-amber-300 bg-amber-50'
+            : undefined
+      }
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            {timer.state === 'idle'
+              ? 'Time yourself'
+              : running
+                ? 'Timing now'
+                : paused
+                  ? 'Paused'
+                  : 'Finished'}
+          </div>
+          <div
+            className={`font-mono text-4xl font-bold tabular-nums ${
+              running ? 'text-emerald-800' : paused ? 'text-amber-800' : 'text-slate-900'
+            }`}
+          >
+            {clockFace(running ? shown : timer.elapsedSeconds)}
+          </div>
+          <div className="mt-1 text-xs text-slate-500">
+            {timer.pauseCount > 0 && (
+              <>
+                {timer.pauseCount} pause{timer.pauseCount === 1 ? '' : 's'}
+                {assignment.estimatedMinutes ? ' · ' : ''}
+              </>
+            )}
+            {assignment.estimatedMinutes ? `${assignment.estimatedMinutes} min expected` : ''}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {timer.state === 'idle' && (
+            <Button size="lg" onClick={() => act('start')} disabled={busy !== null}>
+              {busy ? 'Starting…' : 'Start test'}
+            </Button>
+          )}
+          {running && (
+            <>
+              <Button variant="secondary" onClick={() => act('pause')} disabled={busy !== null}>
+                Pause
+              </Button>
+              <Button onClick={() => act('stop')} disabled={busy !== null}>
+                Finish test
+              </Button>
+            </>
+          )}
+          {paused && (
+            <>
+              <Button size="lg" onClick={() => act('resume')} disabled={busy !== null}>
+                Carry on
+              </Button>
+              <Button variant="secondary" onClick={() => act('stop')} disabled={busy !== null}>
+                Finish test
+              </Button>
+            </>
+          )}
+          {finished && (
+            <Button variant="secondary" onClick={() => act('reset')} disabled={busy !== null}>
+              Time it again
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {running && (
+        <p className="mt-3 text-xs text-emerald-800">
+          The clock keeps running even if you close this page, so pause it if you stop working.
+        </p>
+      )}
+      {paused && (
+        <p className="mt-3 text-xs text-amber-800">
+          Paused time is not counted. Press carry on when you are back.
+        </p>
+      )}
+      {finished && timer.loggedMinutes != null && (
+        <p className="mt-3 text-xs text-slate-600">
+          {timer.loggedMinutes} minute{timer.loggedMinutes === 1 ? '' : 's'} will be recorded when
+          you hand this in.
+        </p>
+      )}
+      {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
+    </Card>
+  )
+}
+
 const BAND_TONES: Record<string, 'slate' | 'blue' | 'amber' | 'violet'> = {
   'warm-up': 'slate',
   standard: 'blue',
@@ -234,6 +389,8 @@ export default function AssignmentPage() {
   const due = dueLabel(assignment.dueDate)
   const isTask = assignment.assignmentType === 'task'
   const alreadyMarked = assignment.status === 'marked' && assignment.latestMarking
+  // What the clock will record, if it was used at all.
+  const timedMinutes = assignment.timer.loggedMinutes ?? null
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -267,6 +424,9 @@ export default function AssignmentPage() {
 
       {/* Prerequisites come before everything else, including the questions. */}
       <ResourceLinks resources={assignment.resources || []} />
+
+      {/* The clock sits above the questions: it is the first thing to press. */}
+      {!alreadyMarked && <TestTimer assignment={assignment} onChange={setAssignment} />}
 
       {alreadyMarked && (
         <Card className="border-emerald-200 bg-emerald-50">
@@ -364,18 +524,36 @@ export default function AssignmentPage() {
             )}
 
             <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                  Minutes spent
-                </label>
-                <input
-                  type="number"
-                  min={0}
-                  value={minutes}
-                  onChange={(e) => setMinutes(e.target.value)}
-                  className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
-                />
-              </div>
+              {/* Once the clock has been used it is the record, so there is
+                  nothing to type and nothing to disagree with. */}
+              {timedMinutes != null ? (
+                <div>
+                  <div className="mb-1.5 block text-sm font-medium text-slate-700">Time taken</div>
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-sm text-slate-700">
+                    {timedMinutes} minute{timedMinutes === 1 ? '' : 's'}
+                    {assignment.timer.pauseCount > 0 &&
+                      `, ${assignment.timer.pauseCount} pause${
+                        assignment.timer.pauseCount === 1 ? '' : 's'
+                      }`}
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                    Minutes spent
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={minutes}
+                    onChange={(e) => setMinutes(e.target.value)}
+                    className="w-full rounded-xl border border-slate-300 p-2.5 text-sm focus:border-slate-500 focus:outline-none"
+                  />
+                  <p className="mt-1 text-xs text-slate-500">
+                    Or use the timer above instead of guessing.
+                  </p>
+                </div>
+              )}
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-700">
                   Anything to flag? (optional)

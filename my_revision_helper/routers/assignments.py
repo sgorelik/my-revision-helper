@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
@@ -37,9 +38,11 @@ from ..schemas.study import (
     AssignmentListResponse,
     AssignmentMarkingSummary,
     AssignmentResponse,
+    AssignmentTimer,
     AssignmentUpdateRequest,
     SelfReportRequest,
 )
+from ..services import timing
 from ..services.scope import build_scope, ensure_user_row, get_owned_child, restrict_to_owner
 from ..services.worksheet import merge_resources, render_worksheet
 
@@ -176,6 +179,7 @@ def serialise_assignment(
         completedAt=assignment.completed_at.isoformat() if assignment.completed_at else None,
         questionCount=question_count,
         latestMarking=summary,
+        timer=AssignmentTimer(**asdict(timing.view(assignment))),
     )
 
 
@@ -563,11 +567,21 @@ async def self_report_assignment(
             detail="Hand this paper in to complete it — upload your work for marking.",
         )
 
+    # Finishing the work finishes the clock, so a child who forgets to press
+    # "finish" does not leave it running all evening.
+    if assignment.timer_state in (timing.RUNNING, timing.PAUSED):
+        timing.stop(assignment)
+
+    measured = timing.logged_minutes(assignment)
+
     submission = Submission(
         id=str(uuid.uuid4()),
         assignment_id=assignment.id,
         child_id=assignment.child_id,
-        minutes_spent=payload.minutesSpent,
+        # A measured time beats a typed one; the field is only a fallback now.
+        minutes_spent=measured if measured is not None else payload.minutesSpent,
+        timed=measured is not None,
+        pause_count=int(assignment.timer_pause_count or 0),
         note=payload.note,
         status="submitted",
     )
@@ -581,8 +595,54 @@ async def self_report_assignment(
 
     logger.info(
         f"Assignment {assignment.id} self-reported complete "
-        f"({payload.minutesSpent or 0} minutes logged)"
+        f"({submission.minutes_spent or 0} minutes, "
+        f"{'timed' if measured is not None else 'self-reported'})"
     )
+    return serialise_assignment(db, assignment)
+
+
+@router.post("/assignments/{assignment_id}/timer/{action}", response_model=AssignmentResponse)
+async def control_timer(
+    assignment_id: str,
+    action: str,
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+) -> AssignmentResponse:
+    """
+    Start, pause, resume, finish or reset the clock on a sitting.
+
+    The whole assignment comes back rather than just the timer, because starting
+    the clock also moves the work to "in progress" and the caller should not have
+    to guess that.
+    """
+    db = _require_db(db)
+    scope = build_scope(user, session_id)
+
+    assignment = restrict_to_owner(
+        db.query(Assignment).filter(Assignment.id == assignment_id), Assignment, scope
+    ).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    try:
+        if action == "reset":
+            timing.reset(assignment)
+        elif action in timing.ACTIONS:
+            timing.ACTIONS[action](assignment)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"action must be one of: reset, {', '.join(sorted(timing.ACTIONS))}",
+            )
+    except timing.TimerError as e:
+        # The child pressed something that no longer applies, usually because
+        # another tab moved the timer on.
+        raise HTTPException(status_code=409, detail=str(e))
+
+    db.commit()
+    db.refresh(assignment)
+
     return serialise_assignment(db, assignment)
 
 
