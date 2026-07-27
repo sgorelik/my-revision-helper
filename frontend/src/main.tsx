@@ -4,6 +4,7 @@ import { Auth0Provider } from '@auth0/auth0-react'
 import { HeroUIProvider } from '@heroui/react'
 import './index.css'
 import AppRouter from './AppRouter.tsx'
+import { isAuth0Configured } from './auth.ts'
 
 const domain = import.meta.env.VITE_AUTH0_DOMAIN
 const clientId = import.meta.env.VITE_AUTH0_CLIENT_ID
@@ -42,7 +43,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_DEBUG_AUTH0) {
 }
 
 // Auth0 is optional - only wrap with Auth0Provider if configured
-const AppWithAuth = domain && clientId ? (
+const AppWithAuth = isAuth0Configured ? (
   <Auth0Provider
     domain={domain}
     clientId={clientId}

@@ -7,6 +7,17 @@
 import { useAuth0 } from '@auth0/auth0-react'
 
 /**
+ * Whether Auth0 is set up for this build.
+ *
+ * Matters because useAuth0 reports isLoading: true forever when there is no
+ * Auth0Provider above it, so anything waiting on auth to settle has to know
+ * not to wait at all in the anonymous configuration.
+ */
+export const isAuth0Configured = Boolean(
+  import.meta.env.VITE_AUTH0_DOMAIN && import.meta.env.VITE_AUTH0_CLIENT_ID,
+)
+
+/**
  * Keep logout returnTo aligned with Auth0 allow-lists.
  * If the app is accessed via 127.0.0.1 in dev, normalize to localhost to avoid
  * Auth0 "Invalid logout URL" / allowlist issues.

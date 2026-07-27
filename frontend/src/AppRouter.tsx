@@ -10,8 +10,8 @@ import { useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useParams } from 'react-router-dom'
 
 import App from './App'
-import { setTokenGetter } from './api/client'
-import { useAuth } from './auth'
+import { markAuthReady, setTokenGetter } from './api/client'
+import { isAuth0Configured, useAuth } from './auth'
 import Shell from './components/Shell'
 import { ChildProvider, useChildren } from './context/ChildContext'
 import AssignmentPage from './pages/AssignmentPage'
@@ -23,17 +23,23 @@ import LibraryPage from './pages/LibraryPage'
 import MarkingPage from './pages/MarkingPage'
 
 /**
- * Give the API client a way to fetch the Auth0 token.
+ * Give the API client a way to fetch the Auth0 token, and tell it when the
+ * answer to "who is this?" is finally known.
  *
  * Registered inside the router so it re-registers whenever the auth state
- * changes, keeping the closure's isAuthenticated value current.
+ * changes, keeping the closure's isAuthenticated value current. This sits
+ * above the routes but below the provider, so its effect runs before any
+ * page's fetch on the same commit.
  */
 function AuthBridge() {
-  const { getToken, isAuthenticated } = useAuth()
+  const { getToken, isAuthenticated, isLoading } = useAuth()
 
   useEffect(() => {
     setTokenGetter(getToken)
-  }, [getToken, isAuthenticated])
+    // Without an Auth0Provider isLoading never clears, so an unconfigured
+    // build is ready immediately rather than never.
+    if (!isAuth0Configured || !isLoading) markAuthReady()
+  }, [getToken, isAuthenticated, isLoading])
 
   return null
 }

@@ -11,6 +11,7 @@ import type { ReactNode } from 'react'
 
 import { api } from '../api/client'
 import type { Child } from '../api/types'
+import { isAuth0Configured, useAuth } from '../auth'
 
 const STORAGE_KEY = 'mrh.selectedChildId'
 
@@ -33,6 +34,13 @@ export function ChildProvider({ children: reactChildren }: { children: ReactNode
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  const { isAuthenticated, isLoading: authLoading } = useAuth()
+
+  // Asking for the children before Auth0 has restored the session sends the
+  // request without a token, and the API answers for the anonymous session
+  // instead of the parent — an empty list, which reads as "no children yet".
+  const authSettled = !isAuth0Configured || !authLoading
+
   const reload = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -53,8 +61,10 @@ export function ChildProvider({ children: reactChildren }: { children: ReactNode
   }, [])
 
   useEffect(() => {
+    if (!authSettled) return
     void reload()
-  }, [reload])
+    // Signing in or out changes whose children these are, so refetch on both.
+  }, [authSettled, isAuthenticated, reload])
 
   useEffect(() => {
     if (selectedId) localStorage.setItem(STORAGE_KEY, selectedId)

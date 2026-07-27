@@ -31,6 +31,32 @@ export function setTokenGetter(getter: TokenGetter) {
   getToken = getter
 }
 
+/**
+ * Requests hold until the auth layer reports it knows who the user is.
+ *
+ * Restoring an Auth0 session is asynchronous, and a request that goes out
+ * before it finishes carries no token. The API then answers for the anonymous
+ * session rather than the parent, which comes back as empty lists — pages
+ * render "nothing here yet" for an account that has plenty. Gating here rather
+ * than in each page means a component added later cannot reintroduce the race.
+ */
+// Bounded: if Auth0 never answers, carrying on unauthenticated shows an empty
+// account, whereas waiting forever shows a spinner that never resolves. The
+// first is recoverable by reloading, the second is not.
+const AUTH_WAIT_MS = 8000
+
+let releaseAuthReady!: () => void
+const authReady = Promise.race([
+  new Promise<void>((resolve) => {
+    releaseAuthReady = resolve
+  }),
+  new Promise<void>((resolve) => setTimeout(resolve, AUTH_WAIT_MS)),
+])
+
+export function markAuthReady() {
+  releaseAuthReady()
+}
+
 export class ApiError extends Error {
   status: number
 
@@ -42,6 +68,7 @@ export class ApiError extends Error {
 }
 
 async function authHeaders(): Promise<Record<string, string>> {
+  await authReady
   const token = await getToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
