@@ -23,6 +23,7 @@ Environment Variables:
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 import json
 import logging
 import os
@@ -43,7 +44,14 @@ from .workflows import RevisionWorkflow
 from .file_processing import process_uploaded_files
 from .auth import get_current_user_optional
 from .database import get_db, init_db
+from .deps import get_session_id
 from .storage import StorageAdapter, get_or_create_user
+from .routers.prep_check import router as prep_check_router
+from .routers.children import router as children_router
+from .routers.papers import router as papers_router
+from .routers.assignments import router as assignments_router
+from .routers.submissions import router as submissions_router
+from .routers.progress import router as progress_router
 from .langfuse_client import (
     fetch_prompt,
     render_prompt,
@@ -55,7 +63,10 @@ from .langfuse_client import (
 )
 
 # Load environment variables from .env file
-load_dotenv()
+try:
+    load_dotenv()
+except (OSError, PermissionError) as e:  # pragma: no cover
+    logging.getLogger(__name__).warning(f"⚠️ Could not load .env file (continuing): {e}")
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -69,23 +80,9 @@ except Exception:  # pragma: no cover
 
 # ---------- In-memory MVP state (demo only, not production-safe) ----------
 #
-# NOTE: These in-memory dictionaries are used for the MVP. In production, replace
-# with a persistent database (PostgreSQL, MongoDB, etc.) or use Temporal's durable
-# state management.
-
-# Stored revision definitions keyed by revision_id
-# Each entry contains: id, name, subject, topics, description, desiredQuestionCount, accuracyThreshold, extractedTexts
-REVISION_DEFS: Dict[str, dict] = {}
-
-# Stored runs keyed by run_id
-# Each entry contains: id, revisionId, status
-REVISION_RUNS: Dict[str, dict] = {}
-
-# Per-run questions and answers
-# RUN_QUESTIONS[run_id] = [{"id": "q1", "text": "..."}, ...]
-# RUN_ANSWERS[run_id] = [AnswerResult dict, ...]
-RUN_QUESTIONS: Dict[str, List[dict]] = {}
-RUN_ANSWERS: Dict[str, List[dict]] = {}
+# NOTE: Keep these dicts in a dedicated module so the storage layer does not
+# depend on the FastAPI module (avoids circular imports and improves testability).
+from .memory_store import REVISION_DEFS, REVISION_RUNS, RUN_QUESTIONS, RUN_ANSWERS
 
 
 # ---------- Pydantic models for HTTP layer ----------
@@ -174,6 +171,29 @@ class FlagRequest(BaseModel):
 # ---------- FastAPI app setup ----------
 
 app = FastAPI()
+
+# Ensure anonymous users get a stable session cookie.
+# Without this, endpoints that scope by session_id (e.g., prep-check history)
+# can behave as "stateless" and appear to lose history between requests.
+@app.middleware("http")
+async def ensure_session_id_cookie(request: Request, call_next):
+    existing = request.cookies.get("session_id")
+    if existing:
+        return await call_next(request)
+
+    # Generate once per request lifecycle, and also set it on the response.
+    sid = str(uuid.uuid4())
+    request.state.session_id = sid
+
+    response = await call_next(request)
+    response.set_cookie(
+        key="session_id",
+        value=sid,
+        max_age=86400 * 30,  # 30 days
+        httponly=True,
+        samesite="lax",
+    )
+    return response
 
 # Add validation error handler for better debugging
 @app.exception_handler(RequestValidationError)
@@ -592,27 +612,11 @@ def get_marking_json_instructions(subject: Optional[str] = None) -> str:
     
     return base_instructions
 
-VALID_SUBJECTS = [
-    "Mathematics",
-    "Science",
-    "English",
-    "History",
-    "Geography",
-    "Art",
-    "Music",
-    "Physical Education",
-    "Computer Science",
-    "Foreign Languages",
-    "Other",
-]
+from .subjects import CANONICAL_SUBJECTS
+
+VALID_SUBJECTS = CANONICAL_SUBJECTS
 
 # ---------- Endpoints used by the React frontend ----------
-
-def get_session_id(session_id: Optional[str] = Cookie(None)) -> str:
-    """Get or generate session ID for anonymous users."""
-    if not session_id:
-        session_id = str(uuid.uuid4())
-    return session_id
 
 
 @app.get("/api/health")
@@ -1650,67 +1654,6 @@ async def get_summary(
     )
 
 
-# Serve static files from frontend build (for production deployment)
-# This allows the FastAPI server to serve the React frontend
-# IMPORTANT: This must be added AFTER all API routes are defined
-frontend_build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
-logger.info(f"Frontend build path: {frontend_build_path}")
-logger.info(f"Frontend build path exists: {os.path.exists(frontend_build_path)}")
-
-if os.path.exists(frontend_build_path):
-    # Mount static assets (JS, CSS, images)
-    assets_path = os.path.join(frontend_build_path, "assets")
-    if os.path.exists(assets_path):
-        app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
-        logger.info(f"Mounted static assets from: {assets_path}")
-    else:
-        logger.warning(f"Assets directory not found: {assets_path}")
-    
-    # Serve index.html for all non-API routes (catch-all must be last)
-    @app.get("/{full_path:path}")
-    async def serve_frontend(full_path: str):
-        """
-        Serve the React frontend for all non-API routes.
-        This catch-all route must be defined last so API routes take precedence.
-        """
-        # Don't serve frontend for API routes (shouldn't reach here if routes are defined correctly)
-        if full_path.startswith("api/"):
-            return {"error": "Not found"}
-        
-        # Check if it's a static file (like calculator-logo.png from public folder)
-        # Vite copies files from public/ to dist/ root
-        static_file_path = os.path.join(frontend_build_path, full_path)
-        if os.path.isfile(static_file_path) and full_path != "index.html":
-            logger.info(f"Serving static file: {static_file_path}")
-            return FileResponse(static_file_path)
-        
-        # Serve index.html for all frontend routes (React Router handles client-side routing)
-        index_path = os.path.join(frontend_build_path, "index.html")
-        if os.path.exists(index_path):
-            logger.info(f"Serving frontend from: {index_path}")
-            return FileResponse(index_path)
-        else:
-            logger.error(f"Frontend index.html not found at: {index_path}")
-            return {
-                "error": "Frontend not built",
-                "details": f"Expected index.html at {index_path}",
-                "build_path": frontend_build_path,
-                "build_path_exists": os.path.exists(frontend_build_path)
-            }
-else:
-    logger.error(f"Frontend build directory not found: {frontend_build_path}")
-    # Fallback: serve a simple message if frontend isn't built
-    @app.get("/{full_path:path}")
-    async def serve_frontend_fallback(full_path: str):
-        if full_path.startswith("api/"):
-            return {"error": "Not found"}
-            return {
-                "error": "Frontend not built",
-                "details": f"Frontend build directory not found at {frontend_build_path}",
-                "message": "Please ensure the frontend is built during deployment (npm run build in frontend/)"
-            }
-
-
 @app.post("/api/runs/{run_id}/questions/{question_id}/flag")
 async def flag_question(
     run_id: str,
@@ -1802,209 +1745,74 @@ async def flag_question(
     }
 
 
-class PrepCheckResponse(BaseModel):
-    """Response from prep check endpoint."""
-    feedback: str
+app.include_router(prep_check_router)
+app.include_router(children_router)
+app.include_router(papers_router)
+app.include_router(assignments_router)
+app.include_router(submissions_router)
+app.include_router(progress_router)
 
 
-@app.post("/api/prep-check", response_model=PrepCheckResponse)
-async def check_prep(
-    subject: str = Form(...),
-    description: str = Form(""),
-    files: List[UploadFile] = File(default_factory=list),
-    previousPrepCheckId: Optional[str] = Form(None),  # Optional: link to previous version
-    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
-    db: Optional[Session] = Depends(get_db),
-    session_id: str = Depends(get_session_id),
-):
-    """
-    Check prep work quality using AI.
-    
-    This endpoint:
-    1. Processes uploaded image/PDF files to extract text using OCR
-    2. Combines extracted text with optional description
-    3. Uses AI to analyze the prep work and provide feedback
-    4. Returns feedback that identifies issues without revealing correct answers
-    5. Stores the prep check and feedback for later access
-    
-    Important: The AI should NEVER provide correct answers. It should:
-    - Identify answers that need more work or are incorrect
-    - Reiterate rubrics (e.g., "provide evidence")
-    - Identify specific issues: calculation errors, spelling, grammar, lack of specificity,
-      not showing work, illegible content, etc.
-    
-    Args:
-        subject: Subject area (e.g., "Mathematics", "History")
-        description: Optional additional criteria for checking
-        files: Uploaded image/PDF files of prep work
-        previousPrepCheckId: Optional ID of a previous prep check - if provided, this will be
-                            linked as an updated version of that prep check
-    
-    Returns:
-        PrepCheckResponse with AI feedback and prep check ID
-    """
-    from fastapi import HTTPException
-    
-    if not OpenAI:
-        raise HTTPException(status_code=503, detail="OpenAI API not configured")
-    
-    # Validate that we have either files or description
-    if not files and not description:
-        raise HTTPException(
-            status_code=400,
-            detail="Please provide either uploaded files or a description of the prep work"
-        )
-    
-    try:
-        # Process uploaded files to extract text
-        # Use the same file processing function as revision creation
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        extracted_texts = await process_uploaded_files(files, client)
-        
-        combined_text = description or ""
-        if extracted_texts:
-            for filename, text in extracted_texts.items():
-                if text:
-                    combined_text += f"\n\n--- Content from {filename} ---\n{text}"
-        
-        if not combined_text.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="No text could be extracted from the provided files. Please ensure files contain readable text."
-            )
-        
-        # Get user ID for tracing
-        user_id = user.get("user_id") if user else None
-        
-        # Create Langfuse trace
-        trace = create_trace(
-            name="prep-check",
-            user_id=user_id,
-            metadata={
-                "subject": subject,
-                "has_description": bool(description),
-                "file_count": len(files),
-                "file_names": [f.filename for f in files] if files else [],
-            },
-        )
-        
-        # Get prep-check specific general context (separate from revision helper context)
-        langfuse_client = get_langfuse()
-        general_context = get_prep_check_context()
-        
-        # Try to fetch prep-check prompt from Langfuse (subject-specific first, then generic)
-        langfuse_prompt_data = fetch_prompt("prep-check", subject=subject)
-        
-        # Default prompt if Langfuse is unavailable
-        default_prompt = """{general_context}
+# ---------------------------------------------------------------------------
+# Serve static files from frontend build (for production deployment)
+# ---------------------------------------------------------------------------
+# This MUST be defined AFTER all API routes so that API endpoints take precedence
+# over the catch-all frontend route.
 
-You are a helpful AI tutor reviewing a student's prep work. Your role is to provide constructive feedback WITHOUT revealing correct answers.
+frontend_build_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+logger.info(f"Frontend build path: {frontend_build_path}")
+logger.info(f"Frontend build path exists: {os.path.exists(frontend_build_path)}")
 
-Review the following prep work and provide feedback that:
-1. Identifies answers that need more work or are incorrect (but DO NOT provide the correct answer)
-2. Reiterates rubrics and requirements (e.g., "provide evidence", "show your work", "be more specific")
-3. Identifies specific issues such as:
-   - Calculation errors (but don't give the correct calculation)
-   - Spelling errors
-   - Grammatical errors
-   - Lack of specificity
-   - Not showing work/steps
-   - Illegible or unclear content
-   - Missing required elements
+if os.path.exists(frontend_build_path):
+    # Mount static assets (JS, CSS, images)
+    assets_path = os.path.join(frontend_build_path, "assets")
+    if os.path.exists(assets_path):
+        app.mount("/assets", StaticFiles(directory=assets_path), name="assets")
+        logger.info(f"Mounted static assets from: {assets_path}")
+    else:
+        logger.warning(f"Assets directory not found: {assets_path}")
 
-Subject: {subject}
-{additional_criteria}
+    # Serve index.html for all non-API routes (catch-all)
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str):
+        """
+        Serve the React frontend for all non-API routes.
 
-Prep work to review:
-{prep_work}
+        Note: API routes MUST be registered before this catch-all.
+        """
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException
 
-Provide your feedback:"""
-        
-        # Use Langfuse prompt if available, otherwise use default
-        if langfuse_prompt_data:
-            prompt_template = langfuse_prompt_data["prompt"]
-            logger.info("Using Langfuse prompt for prep-check")
-        else:
-            prompt_template = default_prompt
-            logger.info("Using default prompt for prep-check (Langfuse not available or prompt not found)")
-        
-        # Render prompt with variables
-        prompt = render_prompt(
-            prompt_template,
-            {
-                "general_context": general_context,
-                "subject": subject,
-                "additional_criteria": f"Additional criteria: {description}" if description else "",
-                "prep_work": combined_text,
-            }
-        )
-        
-        # Call OpenAI
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-        
-        messages = [
-            {"role": "system", "content": "You are a helpful AI tutor that provides constructive feedback on student prep work without revealing correct answers."},
-            {"role": "user", "content": prompt}
-        ]
-        
-        logger.info(f"Calling OpenAI for prep check (model: {model}, subject: {subject})")
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.7,
-            max_tokens=2000,
-        )
-        
-        feedback = response.choices[0].message.content or "No feedback generated."
-        
-        # Get trace ID for storage (if available)
-        langfuse_trace_id = None
-        if trace and hasattr(trace, 'id'):
-            try:
-                langfuse_trace_id = str(trace.id)
-            except Exception:
-                pass
-        
-        # Log to Langfuse
-        if trace:
-            create_generation(
-                trace=trace,
-                name="prep-check-generation",
-                model=model,
-                input_data={"messages": messages},
-                output=feedback,
-                metadata={
-                    "subject": subject,
-                    "has_description": bool(description),
-                    "file_count": len(files),
-                },
-            )
-            trace.end()
-            if langfuse_client:
-                langfuse_client.flush()
-        
-        # Store prep check in database
-        storage = StorageAdapter(user, db, session_id)
-        uploaded_file_names = [f.filename for f in files] if files else []
-        prep_check_id = storage.store_prep_check(
-            subject=subject,
-            description=description if description else None,
-            prep_work_text=combined_text,
-            uploaded_files=uploaded_file_names,
-            feedback=feedback,
-            langfuse_trace_id=langfuse_trace_id,
-        )
-        
-        logger.info(f"Prep check completed successfully (subject: {subject}, feedback length: {len(feedback)}, id: {prep_check_id})")
-        
-        return PrepCheckResponse(feedback=feedback, prepCheckId=prep_check_id)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error checking prep work: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to check prep work: {str(e)}"
-        )
+            raise HTTPException(status_code=404, detail="Not found")
+
+        # Vite copies files from public/ to dist/ root
+        static_file_path = os.path.join(frontend_build_path, full_path)
+        if os.path.isfile(static_file_path) and full_path != "index.html":
+            return FileResponse(static_file_path)
+
+        # Serve index.html for all frontend routes (React Router handles client-side routing)
+        index_path = os.path.join(frontend_build_path, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+
+        return {
+            "error": "Frontend not built",
+            "details": f"Expected index.html at {index_path}",
+            "build_path": frontend_build_path,
+            "build_path_exists": os.path.exists(frontend_build_path),
+        }
+else:
+    logger.error(f"Frontend build directory not found: {frontend_build_path}")
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            from fastapi import HTTPException
+
+            raise HTTPException(status_code=404, detail="Not found")
+
+        return {
+            "error": "Frontend not built",
+            "details": f"Frontend build directory not found at {frontend_build_path}",
+            "message": "Please ensure the frontend is built during deployment (npm run build in frontend/)",
+        }

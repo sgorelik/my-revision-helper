@@ -6,6 +6,24 @@
 
 import { useAuth0 } from '@auth0/auth0-react'
 
+/**
+ * Keep logout returnTo aligned with Auth0 allow-lists.
+ * If the app is accessed via 127.0.0.1 in dev, normalize to localhost to avoid
+ * Auth0 "Invalid logout URL" / allowlist issues.
+ */
+const getAuth0ReturnTo = (): string => {
+  try {
+    const url = new URL(window.location.href)
+    if (url.hostname === '127.0.0.1') url.hostname = 'localhost'
+    url.pathname = ''
+    url.search = ''
+    url.hash = ''
+    return url.toString().replace(/\/$/, '')
+  } catch {
+    return window.location.origin
+  }
+}
+
 export const useAuth = () => {
   const { 
     user, 
@@ -36,7 +54,7 @@ export const useAuth = () => {
     login: () => loginWithRedirect(),
     logout: () => logout({ 
       logoutParams: { 
-        returnTo: window.location.origin 
+        returnTo: getAuth0ReturnTo(),
       } 
     }),
     getToken,

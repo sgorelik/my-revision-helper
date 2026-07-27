@@ -17,22 +17,22 @@ In your application settings, add:
 
 **Allowed Callback URLs:**
 ```
-http://localhost:5173,http://localhost:3000,https://your-railway-domain.railway.app
+http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000,https://your-railway-domain.railway.app
 ```
 
 **Allowed Logout URLs:**
 ```
-http://localhost:5173,http://localhost:3000,https://your-railway-domain.railway.app
+http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000,https://your-railway-domain.railway.app
 ```
 
 **Allowed Web Origins:**
 ```
-http://localhost:5173,http://localhost:3000,https://your-railway-domain.railway.app
+http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000,https://your-railway-domain.railway.app
 ```
 
 **Allowed Origins (CORS):**
 ```
-http://localhost:5173,http://localhost:3000,https://your-railway-domain.railway.app
+http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000,http://127.0.0.1:8000,https://your-railway-domain.railway.app
 ```
 
 ### 4. Create API

@@ -74,6 +74,12 @@ def main():
         ("run_questions", "options", "options JSON"),
         ("run_questions", "correct_answer_index", "correct_answer_index INTEGER"),
         ("run_questions", "rationale", "rationale TEXT"),
+        ("prep_checks", "approx_score", "approx_score INTEGER"),
+        ("prep_checks", "assessed_at", "assessed_at TIMESTAMP"),
+        # Study programme: attribute revisions and runs to a child
+        ("revisions", "child_id", "child_id VARCHAR"),
+        ("revisions", "source_marking_id", "source_marking_id VARCHAR"),
+        ("revision_runs", "child_id", "child_id VARCHAR"),
     ]
     
     all_good = True

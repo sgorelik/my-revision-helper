@@ -269,7 +269,7 @@ async function checkPrep(
   files: File[],
   previousPrepCheckId?: string | null,
   token?: string | null
-): Promise<{ feedback: string; prepCheckId?: string }> {
+): Promise<{ feedback: string; prepCheckId: string; approxScore?: number; assessedAt?: string }> {
   const formData = new FormData()
   formData.append('subject', subject)
   formData.append('description', description || '')
@@ -299,6 +299,43 @@ async function checkPrep(
     throw new Error(error.detail || 'Failed to check prep work')
   }
   return res.json()
+}
+
+type PrepCheckListItem = {
+  id: string
+  subject: string
+  createdAt: string
+  assessedAt?: string | null
+  approxScore?: number | null
+  preview?: string | null
+  uploadedFilesCount: number
+}
+
+type PrepCheckListResponse = {
+  items: PrepCheckListItem[]
+  total: number
+}
+
+type PrepCheckDetail = {
+  id: string
+  subject: string
+  description?: string | null
+  prepWorkText: string
+  uploadedFiles: string[]
+  feedback: string
+  approxScore?: number | null
+  assessedAt?: string | null
+  previousPrepCheckId?: string | null
+  createdAt: string
+}
+
+function escapeLikelyMathMarkdown(input: string): string {
+  // Prevent markdown from mangling common math tokens like x_1 or 2*3
+  // while still allowing headings/lists in plain English feedback.
+  return (input || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/(?<!\\)([A-Za-z0-9])_([A-Za-z0-9])/g, "$1\\_$2")
+    .replace(/(?<!\\)(\d)\*(\d)/g, "$1\\*$2")
 }
 
 async function flagQuestion(runId: string, questionId: string, flagType: string, token?: string | null): Promise<void> {
@@ -360,7 +397,7 @@ function App() {
   const [completedRuns, setCompletedRuns] = useState<CompletedRun[]>([])
   const [showRevisionList, setShowRevisionList] = useState(false)
   const [currentPage, setCurrentPage] = useState<'home' | 'create' | 'prep-check'>('home')
-  const [prepCheckState, setPrepCheckState] = useState<'config' | 'checking' | 'results' | null>(null)
+  const [prepCheckState, setPrepCheckState] = useState<'config' | 'checking' | 'results' | 'history-detail' | null>(null)
   const [prepCheckForm, setPrepCheckForm] = useState({
     subject: '',
     description: '',
@@ -369,8 +406,16 @@ function App() {
   const [prepCheckFiles, setPrepCheckFiles] = useState<File[]>([])
   const [prepCheckResult, setPrepCheckResult] = useState<string | null>(null)
   const [prepCheckId, setPrepCheckId] = useState<string | null>(null)
+  const [prepCheckApproxScore, setPrepCheckApproxScore] = useState<number | null>(null)
   const [isCheckingPrep, setIsCheckingPrep] = useState(false)
   const [previousPrepChecks, setPreviousPrepChecks] = useState<Array<{id: string; subject: string; createdAt: string}>>([])
+  const [prepCheckHistory, setPrepCheckHistory] = useState<PrepCheckListItem[]>([])
+  const [prepCheckHistoryTotal, setPrepCheckHistoryTotal] = useState(0)
+  const [prepCheckHistoryPage, setPrepCheckHistoryPage] = useState(1)
+  const prepCheckHistoryLimit = 10
+  const [isLoadingPrepCheckHistory, setIsLoadingPrepCheckHistory] = useState(false)
+  const [selectedPrepCheck, setSelectedPrepCheck] = useState<PrepCheckDetail | null>(null)
+  const [isLoadingPrepCheckDetail, setIsLoadingPrepCheckDetail] = useState(false)
   const [form, setForm] = useState({
     name: '',
     subject: '',
@@ -752,8 +797,26 @@ function App() {
     setCurrentPage('prep-check')
     setPrepCheckState('config')
     setShowRevisionList(false)
-    loadPreviousPrepChecks()
+    // History depends on auth state (bearer token) and may be empty if we load
+    // before Auth0 finishes initializing. We re-load in an effect once authLoading
+    // settles and/or auth state changes while on the prep-check page.
+    if (!authLoading) {
+      loadPreviousPrepChecks()
+      loadPrepCheckHistory(1)
+    }
   }
+
+  // When entering the prep-check page (config state) or when auth becomes available,
+  // refresh history so signed-in users see their saved prep checks.
+  useEffect(() => {
+    if (currentPage !== 'prep-check') return
+    if (prepCheckState !== 'config') return
+    if (authLoading) return
+    // Always load page 1 on entry/auth change to avoid confusing pagination mismatch.
+    loadPreviousPrepChecks()
+    loadPrepCheckHistory(1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, prepCheckState, authLoading, isAuthenticated])
 
   const handleSubmitPrepCheck = async () => {
     if (!prepCheckForm.subject || (prepCheckFiles.length === 0 && !prepCheckForm.description)) {
@@ -776,6 +839,7 @@ function App() {
       )
       setPrepCheckResult(result.feedback)
       setPrepCheckId(result.prepCheckId || null)
+      setPrepCheckApproxScore(typeof result.approxScore === 'number' ? result.approxScore : null)
       setPrepCheckState('results')
     } catch (err: any) {
       setError(err.message ?? 'Failed to check prep work')
@@ -792,10 +856,10 @@ function App() {
       if (token) {
         headers['Authorization'] = `Bearer ${token}`
       }
-      const res = await fetch(`${API_BASE}/prep-checks`, { headers })
+      const res = await fetch(`${API_BASE}/prep-checks?limit=20&offset=0`, { headers })
       if (res.ok) {
-        const checks = await res.json()
-        setPreviousPrepChecks(checks.map((c: any) => ({
+        const data: PrepCheckListResponse = await res.json()
+        setPreviousPrepChecks((data.items || []).map((c: any) => ({
           id: c.id,
           subject: c.subject,
           createdAt: c.createdAt,
@@ -804,6 +868,48 @@ function App() {
     } catch (err) {
       // Silently fail - previous prep checks are optional
       console.warn('Failed to load previous prep checks:', err)
+    }
+  }
+
+  const loadPrepCheckHistory = async (page: number) => {
+    setIsLoadingPrepCheckHistory(true)
+    try {
+      const token = await getToken()
+      const headers: HeadersInit = {}
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+      const offset = (page - 1) * prepCheckHistoryLimit
+      const res = await fetch(`${API_BASE}/prep-checks?limit=${prepCheckHistoryLimit}&offset=${offset}`, { headers })
+      if (!res.ok) throw new Error('Failed to load prep check history')
+      const data: PrepCheckListResponse = await res.json()
+      setPrepCheckHistory(data.items || [])
+      setPrepCheckHistoryTotal(data.total || 0)
+      setPrepCheckHistoryPage(page)
+    } catch (err) {
+      console.warn('Failed to load prep check history:', err)
+    } finally {
+      setIsLoadingPrepCheckHistory(false)
+    }
+  }
+
+  const openPrepCheckDetail = async (id: string) => {
+    setIsLoadingPrepCheckDetail(true)
+    try {
+      const token = await getToken()
+      const headers: HeadersInit = {}
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`
+      }
+      const res = await fetch(`${API_BASE}/prep-checks/${id}`, { headers })
+      if (!res.ok) throw new Error('Failed to load prep check')
+      const detail: PrepCheckDetail = await res.json()
+      setSelectedPrepCheck(detail)
+      setPrepCheckState('history-detail')
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to load prep check')
+    } finally {
+      setIsLoadingPrepCheckDetail(false)
     }
   }
 
@@ -1178,6 +1284,86 @@ function App() {
               Upload your prep work and get AI feedback on quality, without revealing correct answers
             </p>
           </div>
+
+          {/* Prep Check History (paginated) */}
+          <Card className="border border-gray-200 shadow-sm bg-white mb-4">
+            <CardBody className="p-6">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Past Prep Checks</h3>
+                  <p className="text-sm text-gray-600">Select one to view the assessed work and stored feedback</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="flat"
+                  onClick={() => loadPrepCheckHistory(1)}
+                  className="border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
+                  isLoading={isLoadingPrepCheckHistory}
+                >
+                  Refresh
+                </Button>
+              </div>
+
+              {prepCheckHistory.length === 0 && !isLoadingPrepCheckHistory ? (
+                <div className="text-sm text-gray-600">No prep checks yet.</div>
+              ) : (
+                <div className="space-y-2">
+                  {prepCheckHistory.map((pc) => (
+                    <div key={pc.id} className="border border-gray-200 rounded-lg p-3 bg-white">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="font-semibold text-gray-900">{pc.subject}</div>
+                            {typeof pc.approxScore === 'number' && (
+                              <Chip size="sm" variant="flat">
+                                {pc.approxScore}/100
+                              </Chip>
+                            )}
+                            <div className="text-xs text-gray-500">
+                              {new Date(pc.createdAt).toLocaleString()}
+                            </div>
+                          </div>
+                          {pc.preview && (
+                            <div className="text-sm text-gray-700 mt-1 line-clamp-2">
+                              {pc.preview}
+                            </div>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={() => openPrepCheckDetail(pc.id)}
+                          className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                          isLoading={isLoadingPrepCheckDetail && selectedPrepCheck?.id === pc.id}
+                        >
+                          View
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {prepCheckHistoryTotal > prepCheckHistoryLimit && (
+                <div className="flex justify-center mt-4">
+                  <Pagination
+                    total={Math.ceil(prepCheckHistoryTotal / prepCheckHistoryLimit)}
+                    page={prepCheckHistoryPage}
+                    onChange={(p) => loadPrepCheckHistory(p)}
+                    color="warning"
+                    classNames={{
+                      wrapper: "gap-0",
+                      base: "gap-0",
+                      item: "w-8 h-8 text-sm rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50 data-[selected=true]:bg-gradient-to-r data-[selected=true]:from-orange-600 data-[selected=true]:to-cyan-600 data-[selected=true]:text-white data-[selected=true]:border-orange-400",
+                      cursor: "hidden",
+                      prev: "rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50",
+                      next: "rounded-lg border-2 border-orange-200 bg-white hover:bg-orange-50",
+                    }}
+                  />
+                </div>
+              )}
+            </CardBody>
+          </Card>
+
           <Card className="border border-gray-200 shadow-sm bg-white">
             <CardBody className="p-6">
               <div className="space-y-4 w-full">
@@ -1431,6 +1617,11 @@ function App() {
             <p className="text-sm text-gray-600">
               AI feedback on your prep work
             </p>
+            {typeof prepCheckApproxScore === 'number' && (
+              <div className="mt-2">
+                <Chip size="sm" variant="flat">{prepCheckApproxScore}/100</Chip>
+              </div>
+            )}
           </div>
           <Card className="border border-gray-200 shadow-sm bg-white">
             <CardBody className="p-6">
@@ -1448,7 +1639,7 @@ function App() {
                     em: ({node, ...props}) => <em className="italic" {...props} />,
                   }}
                 >
-                  {prepCheckResult}
+                  {escapeLikelyMathMarkdown(prepCheckResult)}
                 </ReactMarkdown>
               </div>
               <div className="mt-6 flex gap-3 justify-end">
@@ -1468,6 +1659,91 @@ function App() {
                   className="border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
                 >
                   Upload Updated Version
+                </Button>
+                <Button
+                  onClick={handleBackToHome}
+                  className="bg-gradient-to-r from-orange-600 to-cyan-600 hover:from-orange-700 hover:to-cyan-700 text-white rounded-lg font-semibold shadow-md transition-all"
+                >
+                  Done
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
+        </div>
+      )}
+
+      {/* Prep Check History Detail */}
+      {currentPage === 'prep-check' && prepCheckState === 'history-detail' && selectedPrepCheck && (
+        <div className="mb-6">
+          <div className="mb-4">
+            <h2 className="text-2xl font-semibold text-gray-900 mb-1">Prep Check (History)</h2>
+            <p className="text-sm text-gray-600">
+              Stored assessed work and stored AI feedback
+            </p>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <Chip size="sm" variant="flat">{selectedPrepCheck.subject}</Chip>
+              {typeof selectedPrepCheck.approxScore === 'number' && (
+                <Chip size="sm" variant="flat">{selectedPrepCheck.approxScore}/100</Chip>
+              )}
+              <span className="text-xs text-gray-500">
+                {new Date(selectedPrepCheck.createdAt).toLocaleString()}
+              </span>
+            </div>
+          </div>
+
+          <Card className="border border-gray-200 shadow-sm bg-white">
+            <CardBody className="p-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">Assessed work</h3>
+                  {selectedPrepCheck.uploadedFiles?.length > 0 && (
+                    <div className="mb-3">
+                      <div className="text-sm font-medium text-gray-700 mb-1">Files</div>
+                      <div className="flex flex-wrap gap-2">
+                        {selectedPrepCheck.uploadedFiles.map((f) => (
+                          <Chip key={f} size="sm" variant="flat">{f}</Chip>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  <pre className="whitespace-pre-wrap break-words text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-lg p-3">
+                    {selectedPrepCheck.prepWorkText?.replace(/\r\n/g, "\n")}
+                  </pre>
+                </div>
+
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">AI feedback</h3>
+                  <div className="prose prose-sm max-w-none prose-headings:text-gray-900 prose-h1:text-2xl prose-h1:font-semibold prose-h1:mb-4 prose-h2:text-xl prose-h2:font-semibold prose-h2:mt-6 prose-h2:mb-3 prose-h3:text-lg prose-h3:font-semibold prose-h3:mt-4 prose-h3:mb-2 prose-p:text-gray-800 prose-p:leading-relaxed prose-p:mb-3 prose-ul:list-disc prose-ul:pl-6 prose-ul:mb-4 prose-ul:text-gray-800 prose-li:mb-1 prose-strong:text-gray-900 prose-strong:font-semibold prose-ol:list-decimal prose-ol:pl-6 prose-ol:mb-4 prose-ol:text-gray-800">
+                    <ReactMarkdown
+                      components={{
+                        h1: ({node, ...props}) => <h1 className="text-2xl font-semibold text-gray-900 mb-4 mt-6 first:mt-0" {...props} />,
+                        h2: ({node, ...props}) => <h2 className="text-xl font-semibold text-gray-900 mb-3 mt-6 first:mt-0" {...props} />,
+                        h3: ({node, ...props}) => <h3 className="text-lg font-semibold text-gray-900 mb-2 mt-4 first:mt-0" {...props} />,
+                        p: ({node, ...props}) => <p className="text-gray-800 leading-relaxed mb-3" {...props} />,
+                        ul: ({node, ...props}) => <ul className="list-disc pl-6 mb-4 text-gray-800" {...props} />,
+                        ol: ({node, ...props}) => <ol className="list-decimal pl-6 mb-4 text-gray-800" {...props} />,
+                        li: ({node, ...props}) => <li className="mb-1" {...props} />,
+                        strong: ({node, ...props}) => <strong className="font-semibold text-gray-900" {...props} />,
+                        em: ({node, ...props}) => <em className="italic" {...props} />,
+                      }}
+                    >
+                      {escapeLikelyMathMarkdown(selectedPrepCheck.feedback)}
+                    </ReactMarkdown>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex gap-3 justify-end">
+                <Button
+                  onClick={() => {
+                    setSelectedPrepCheck(null)
+                    setPrepCheckState('config')
+                    loadPrepCheckHistory(prepCheckHistoryPage)
+                  }}
+                  variant="flat"
+                  className="border border-gray-300 text-gray-700 bg-white hover:bg-gray-50 rounded-lg font-semibold transition-all"
+                >
+                  Back
                 </Button>
                 <Button
                   onClick={handleBackToHome}

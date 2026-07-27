@@ -247,9 +247,12 @@ startxref
         """Test that large PDFs are processed (no size limit for PDFs)."""
         try:
             import pdfplumber
-            
-            # Create a large PDF content (simulated)
-            large_content = b"fake pdf content" * (10 * 1024 * 1024)  # ~10MB
+
+            # Comfortably past the limit images are held to, while staying small
+            # enough to stay quick: pdfminer's scan for a /Root in a file that
+            # has none costs superlinear time, so a few hundred MB of filler
+            # would stall the suite for minutes rather than testing anything.
+            large_content = b"fake pdf content" * (512 * 1024)  # ~8MB
             
             file = create_mock_upload_file("large.pdf", large_content, "application/pdf")
             await file.seek(0)
@@ -449,13 +452,24 @@ class TestProcessUploadedFiles:
     @pytest.mark.asyncio
     async def test_process_uploaded_files_unsupported_type(self):
         """Test processing unsupported file types."""
-        file = create_mock_upload_file("test.txt", b"text content", "text/plain")
+        file = create_mock_upload_file("archive.zip", b"PK\x03\x04binary", "application/zip")
         
         mock_client = MagicMock()
         result = await process_uploaded_files([file], mock_client)
         
         # Should skip unsupported files
         assert result == {}
+    
+    @pytest.mark.asyncio
+    async def test_process_uploaded_files_plain_text(self):
+        """Plain text files are read directly, with no OCR round trip."""
+        file = create_mock_upload_file("notes.txt", b"text content", "text/plain")
+        
+        mock_client = MagicMock()
+        result = await process_uploaded_files([file], mock_client)
+        
+        assert result == {"notes.txt": "text content"}
+        mock_client.chat.completions.create.assert_not_called()
     
     @pytest.mark.asyncio
     async def test_process_uploaded_files_multiple_files(self):

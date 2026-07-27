@@ -195,6 +195,163 @@ async def extract_text_from_pptx(file: UploadFile) -> Optional[str]:
         return None
 
 
+def _docx_text_from_bytes(contents: bytes) -> Optional[str]:
+    """
+    Pull text out of a .docx without requiring python-docx.
+
+    A .docx is a zip of XML. Paragraphs and table cells are converted to lines
+    and pipe-separated columns respectively, which keeps the shape of the
+    tables that study plans and trackers rely on.
+    """
+    import html
+    import re
+    import zipfile
+
+    with zipfile.ZipFile(BytesIO(contents)) as archive:
+        if "word/document.xml" not in archive.namelist():
+            return None
+        xml = archive.read("word/document.xml").decode("utf-8", errors="replace")
+
+    # Preserve document structure before stripping tags.
+    xml = xml.replace("</w:tab>", "\t")
+    xml = xml.replace("<w:br/>", "\n").replace("<w:br />", "\n")
+    xml = xml.replace("</w:tc>", " | ")
+    xml = xml.replace("</w:tr>", "\n")
+    xml = xml.replace("</w:p>", "\n")
+
+    text = html.unescape(re.sub(r"<[^>]+>", "", xml))
+
+    lines: List[str] = []
+    for raw_line in text.split("\n"):
+        line = raw_line.rstrip().rstrip(" |")
+        if not line.strip():
+            # Collapse runs of blank lines to a single separator.
+            if lines and lines[-1] != "":
+                lines.append("")
+            continue
+        lines.append(line)
+
+    result = "\n".join(lines).strip()
+    return result or None
+
+
+def _xlsx_text_from_bytes(contents: bytes) -> Optional[str]:
+    """
+    Pull text out of an .xlsx without requiring openpyxl.
+
+    Each sheet becomes a titled section of pipe-separated rows, so trackers and
+    score logs stay readable to both a human and the model.
+    """
+    import html
+    import re
+    import zipfile
+
+    with zipfile.ZipFile(BytesIO(contents)) as archive:
+        names = archive.namelist()
+        if "xl/workbook.xml" not in names:
+            return None
+
+        # Shared strings are referenced by index from the cells.
+        shared: List[str] = []
+        if "xl/sharedStrings.xml" in names:
+            shared_xml = archive.read("xl/sharedStrings.xml").decode("utf-8", errors="replace")
+            for item in re.findall(r"<si>(.*?)</si>", shared_xml, re.S):
+                parts = re.findall(r"<t[^>]*>(.*?)</t>", item, re.S)
+                shared.append(html.unescape(re.sub(r"<[^>]+>", "", "".join(parts))))
+
+        workbook_xml = archive.read("xl/workbook.xml").decode("utf-8", errors="replace")
+        sheets = re.findall(r'<sheet[^>]*name="([^"]+)"[^>]*r:id="(rId\d+)"', workbook_xml)
+
+        rel_map: Dict[str, str] = {}
+        if "xl/_rels/workbook.xml.rels" in names:
+            rels_xml = archive.read("xl/_rels/workbook.xml.rels").decode("utf-8", errors="replace")
+            rel_map = dict(re.findall(r'Id="(rId\d+)"[^>]*Target="([^"]+)"', rels_xml))
+
+        sections: List[str] = []
+        for sheet_name, rel_id in sheets:
+            target = rel_map.get(rel_id, "")
+            if not target:
+                continue
+            path = "xl/" + target.lstrip("/").removeprefix("xl/")
+            if path not in names:
+                continue
+
+            sheet_xml = archive.read(path).decode("utf-8", errors="replace")
+            rows: List[str] = []
+            for row_xml in re.findall(r"<row[^>]*>(.*?)</row>", sheet_xml, re.S):
+                values: List[str] = []
+                for attrs, body, self_closing_attrs in re.findall(
+                    r"<c\b([^>]*)>(.*?)</c>|<c\b([^>]*)/>", row_xml, re.S
+                ):
+                    attrs = attrs or self_closing_attrs
+                    inline = re.findall(r"<t[^>]*>(.*?)</t>", body, re.S)
+                    if inline:
+                        value = "".join(inline)
+                    else:
+                        v_match = re.search(r"<v>(.*?)</v>", body, re.S)
+                        if not v_match:
+                            values.append("")
+                            continue
+                        value = v_match.group(1)
+                        type_match = re.search(r't="([^"]+)"', attrs)
+                        if type_match and type_match.group(1) == "s":
+                            index = int(value)
+                            value = shared[index] if index < len(shared) else value
+                    values.append(html.unescape(str(value)))
+
+                line = " | ".join(values).rstrip(" |")
+                if line.strip():
+                    rows.append(line)
+
+            if rows:
+                sections.append(f"--- Sheet: {sheet_name} ---\n" + "\n".join(rows))
+
+    result = "\n\n".join(sections).strip()
+    return result or None
+
+
+async def extract_text_from_docx(file: UploadFile) -> Optional[str]:
+    """
+    Extract text from a Word document, preserving paragraphs and table layout.
+
+    Args:
+        file: Uploaded .docx file
+
+    Returns:
+        Extracted text, or None if extraction fails
+    """
+    try:
+        contents = await file.read()
+        text = _docx_text_from_bytes(contents)
+        if text:
+            logger.info(f"Extracted {len(text)} characters from DOCX {file.filename}")
+        return text
+    except Exception as e:
+        logger.error(f"Failed to extract text from DOCX {file.filename}: {e}", exc_info=True)
+        return None
+
+
+async def extract_text_from_xlsx(file: UploadFile) -> Optional[str]:
+    """
+    Extract text from a spreadsheet, one titled section per sheet.
+
+    Args:
+        file: Uploaded .xlsx file
+
+    Returns:
+        Extracted text, or None if extraction fails
+    """
+    try:
+        contents = await file.read()
+        text = _xlsx_text_from_bytes(contents)
+        if text:
+            logger.info(f"Extracted {len(text)} characters from XLSX {file.filename}")
+        return text
+    except Exception as e:
+        logger.error(f"Failed to extract text from XLSX {file.filename}: {e}", exc_info=True)
+        return None
+
+
 async def extract_text_from_image(file: UploadFile, client: Any) -> Optional[str]:
     """
     Extract text from an uploaded image using OpenAI Vision API.
@@ -315,6 +472,35 @@ async def process_uploaded_files(files: List[UploadFile], openai_client: Any) ->
                 else:
                     skipped_files.append(f"{filename} (PowerPoint extraction failed or file too large)")
             
+            # Handle Word documents
+            elif ("wordprocessingml" in content_type or filename_lower.endswith('.docx')):
+                logger.info(f"Processing Word document: {filename}")
+                text = await extract_text_from_docx(file)
+                if text:
+                    extracted_texts[filename] = text
+                else:
+                    skipped_files.append(f"{filename} (Word extraction failed)")
+
+            # Handle Excel spreadsheets
+            elif ("spreadsheetml" in content_type or filename_lower.endswith('.xlsx')):
+                logger.info(f"Processing spreadsheet: {filename}")
+                text = await extract_text_from_xlsx(file)
+                if text:
+                    extracted_texts[filename] = text
+                else:
+                    skipped_files.append(f"{filename} (spreadsheet extraction failed)")
+
+            # Handle plain text and markdown
+            elif ("text/plain" in content_type or "markdown" in content_type or
+                  filename_lower.endswith(('.txt', '.md'))):
+                logger.info(f"Processing text file: {filename}")
+                raw = await file.read()
+                text = raw.decode("utf-8", errors="replace").strip()
+                if text:
+                    extracted_texts[filename] = text
+                else:
+                    skipped_files.append(f"{filename} (empty text file)")
+
             # Handle image files (requires OpenAI client)
             elif any(img_type in content_type for img_type in ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"]):
                 if not openai_client:

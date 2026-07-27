@@ -21,9 +21,13 @@ import logging
 from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 
-load_dotenv()
-
 logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file (fail-soft if unavailable)
+try:
+    load_dotenv()
+except (OSError, PermissionError) as e:
+    logger.warning(f"⚠️ Could not load .env file for Langfuse (continuing): {e}")
 
 # Try to import Langfuse
 try:

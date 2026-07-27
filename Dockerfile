@@ -1,6 +1,7 @@
 # Multi-stage build for Railway
 # Stage 1: Build frontend
-FROM node:18-alpine AS frontend-builder
+# Node 22: Vite 7 and react-router 7 both refuse to run on Node 18.
+FROM node:22-alpine AS frontend-builder
 
 # Accept build arguments for Vite environment variables
 # Railway will pass these as build args if set
@@ -45,6 +46,10 @@ COPY my_revision_helper ./my_revision_helper
 COPY migrate_*.py ./
 COPY run_migrations.py ./
 COPY ensure_migrations.py ./
+
+# Loading a child's plan, tracker and workbooks is a one-off admin job run
+# against the deployed database, so the script ships with the image.
+COPY import_study_plan.py ./
 
 # Expose port (Railway sets PORT env var)
 ENV PORT=8000

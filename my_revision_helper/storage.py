@@ -7,6 +7,7 @@ access their data within the current session.
 """
 
 from typing import Optional, Dict, List
+from datetime import datetime
 from sqlalchemy.orm import Session
 from .models_db import User, Revision, RevisionRun, RunQuestion, RunAnswer, QuestionFlag, PrepCheck
 import uuid
@@ -49,7 +50,8 @@ class StorageAdapter:
         
         # In-memory storage (fallback when DB not available)
         if not self.use_database:
-            from .api import REVISION_DEFS, REVISION_RUNS, RUN_QUESTIONS, RUN_ANSWERS
+            # Keep storage independent of the FastAPI module.
+            from .memory_store import REVISION_DEFS, REVISION_RUNS, RUN_QUESTIONS, RUN_ANSWERS
             self._revisions = REVISION_DEFS
             self._runs = REVISION_RUNS
             self._questions = RUN_QUESTIONS
@@ -502,6 +504,8 @@ class StorageAdapter:
         prep_work_text: str,
         uploaded_files: List[str],
         feedback: str,
+        approx_score: Optional[int] = None,
+        assessed_at: Optional[datetime] = None,
         langfuse_trace_id: Optional[str] = None,
         previous_prep_check_id: Optional[str] = None,
     ) -> str:
@@ -542,6 +546,8 @@ class StorageAdapter:
                 prep_work_text=prep_work_text,
                 uploaded_files=uploaded_files,
                 feedback=feedback,
+                approx_score=approx_score,
+                assessed_at=assessed_at or datetime.utcnow(),
                 langfuse_trace_id=langfuse_trace_id,
             )
             self.db.add(prep_check)
@@ -554,31 +560,50 @@ class StorageAdapter:
         
         return prep_check_id
     
-    def list_prep_checks(self) -> List[dict]:
-        """List all prep checks for this user/session."""
-        if self.use_database:
-            # Get all prep checks for this user/session
-            if self.is_authenticated:
-                prep_checks = self.db.query(PrepCheck).filter(
-                    PrepCheck.user_id == self.user["user_id"]
-                ).order_by(PrepCheck.created_at.desc()).all()
-            else:
-                prep_checks = self.db.query(PrepCheck).filter(
-                    PrepCheck.session_id == self.session_id
-                ).order_by(PrepCheck.created_at.desc()).all()
+    def list_prep_checks(self, limit: int = 20, offset: int = 0) -> dict:
+        """
+        List prep checks for this user/session (paginated).
+        
+        Returns:
+            {
+              "items": [...],
+              "total": int
+            }
+        """
+        if not (self.use_database and self.db):
+            return {"items": [], "total": 0}
+        
+        # Base query scoped to user/session
+        if self.is_authenticated:
+            q = self.db.query(PrepCheck).filter(PrepCheck.user_id == self.user["user_id"])
+        else:
+            q = self.db.query(PrepCheck).filter(PrepCheck.session_id == self.session_id)
+        
+        total = q.count()
+        prep_checks = (
+            q.order_by(PrepCheck.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        
+        items = []
+        for pc in prep_checks:
+            prep_text = pc.prep_work_text or ""
+            preview = prep_text.strip().replace("\n", " ")
+            preview = preview[:120] + ("..." if len(preview) > 120 else "")
             
-            return [{
+            items.append({
                 "id": pc.id,
                 "subject": pc.subject,
-                "description": pc.description,
-                "uploadedFiles": pc.uploaded_files or [],
-                "feedback": pc.feedback,
-                "previousPrepCheckId": pc.previous_prep_check_id,
                 "createdAt": pc.created_at.isoformat(),
-            } for pc in prep_checks]
-        else:
-            # In-memory storage
-            return []
+                "assessedAt": pc.assessed_at.isoformat() if getattr(pc, "assessed_at", None) else None,
+                "approxScore": getattr(pc, "approx_score", None),
+                "preview": preview,
+                "uploadedFilesCount": len(pc.uploaded_files or []),
+            })
+        
+        return {"items": items, "total": total}
     
     def get_prep_check(self, prep_check_id: str) -> Optional[dict]:
         """Get a specific prep check by ID."""
@@ -602,6 +627,8 @@ class StorageAdapter:
                 "prepWorkText": prep_check.prep_work_text,
                 "uploadedFiles": prep_check.uploaded_files or [],
                 "feedback": prep_check.feedback,
+                "approxScore": getattr(prep_check, "approx_score", None),
+                "assessedAt": prep_check.assessed_at.isoformat() if getattr(prep_check, "assessed_at", None) else None,
                 "previousPrepCheckId": prep_check.previous_prep_check_id,
                 "createdAt": prep_check.created_at.isoformat(),
             }
