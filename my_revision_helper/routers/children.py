@@ -19,7 +19,19 @@ from sqlalchemy.orm import Session
 from ..auth import get_current_user_optional
 from ..database import get_db
 from ..deps import get_session_id
-from ..models_db import Child, ChildSubject, PlanBlock, StudyPlan
+from ..models_db import (
+    Child,
+    ChildSubject,
+    Marking,
+    PlanBlock,
+    QuestionMark,
+    Revision,
+    RevisionRun,
+    ScoreLogEntry,
+    StudyPlan,
+    Submission,
+    TopicMastery,
+)
 from ..schemas.study import (
     ChildCreateRequest,
     ChildListResponse,
@@ -214,10 +226,43 @@ async def delete_child(
     if not child:
         raise HTTPException(status_code=404, detail="Child not found")
 
+    _delete_child_history(db, child_id)
+
     db.delete(child)
     db.commit()
     logger.info(f"Deleted child {child_id}")
     return {"deleted": True, "childId": child_id}
+
+
+def _delete_child_history(db: Session, child_id: str) -> None:
+    """
+    Clear the rows that hang off a child by foreign key but not by ORM cascade.
+
+    Mastery, the score log and the revision links reference the child directly
+    and would otherwise block the delete at the database level. The order below
+    is forced by the foreign keys between them: score_log points at markings, so
+    it has to go first, and question_marks point at markings too.
+    """
+    marking_ids = [
+        row[0] for row in db.query(Marking.id).filter(Marking.child_id == child_id).all()
+    ]
+
+    if marking_ids:
+        db.query(QuestionMark).filter(QuestionMark.marking_id.in_(marking_ids)).delete(
+            synchronize_session=False
+        )
+
+    for model in (ScoreLogEntry, TopicMastery, Marking, Submission):
+        db.query(model).filter(model.child_id == child_id).delete(synchronize_session=False)
+
+    # Practice runs are the parent's content and outlive the profile, so they
+    # are detached rather than destroyed.
+    for model in (Revision, RevisionRun):
+        db.query(model).filter(model.child_id == child_id).update(
+            {"child_id": None}, synchronize_session=False
+        )
+
+    db.flush()
 
 
 # ---------------------------------------------------------------------------

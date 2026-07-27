@@ -1120,6 +1120,60 @@ def test_marking_is_not_reachable_from_another_account(client, child, stub_marki
 
 
 @pytest.mark.integration
+def test_deleting_a_child_takes_their_whole_history_with_them(
+    client, child, stub_marking, monkeypatch
+):
+    """
+    A child who has been marked has score log and mastery rows pointing at
+    them, and those are held by foreign keys the ORM cascade does not cover.
+    Deleting has to clear them or the database refuses.
+    """
+    stub_marking("incorrect", awarded=0)
+    _, assignment = _assign_workbook(client, child)
+    client.post(f"/api/assignments/{assignment['id']}/submit", data={"pastedText": "no idea"})
+
+    assert client.get(f"/api/children/{child}/score-log").json()
+    assert client.get(f"/api/children/{child}/mastery").json()
+
+    # Deletion is refused for anonymous callers, so sign in for this one.
+    from my_revision_helper.auth import get_current_user_optional
+    from my_revision_helper.api import app
+
+    app.dependency_overrides[get_current_user_optional] = lambda: {
+        "user_id": "auth0|deleter",
+        "email": "deleter@example.com",
+        "name": "Deleter",
+    }
+    try:
+        owned = client.post("/api/children", json={"name": "Doomed"}).json()["id"]
+        paper = client.post(
+            "/api/papers",
+            data={"subject": "Mathematics", "title": "Doomed paper"},
+            files={"files": ("wb.txt", WORKBOOK_TEXT.encode(), "text/plain")},
+        ).json()
+        doomed_assignment = client.post(
+            "/api/assignments",
+            json={
+                "childId": owned,
+                "title": "Doomed work",
+                "subject": "Mathematics",
+                "assignmentType": "paper",
+                "paperId": paper["id"],
+            },
+        ).json()
+        client.post(
+            f"/api/assignments/{doomed_assignment['id']}/submit",
+            data={"pastedText": "no idea"},
+        )
+        assert client.get(f"/api/children/{owned}/score-log").json()
+
+        assert client.delete(f"/api/children/{owned}").status_code == 200
+        assert client.get(f"/api/children/{owned}").status_code == 404
+    finally:
+        app.dependency_overrides.pop(get_current_user_optional, None)
+
+
+@pytest.mark.integration
 def test_parent_can_override_a_question_mark(client, child, stub_marking):
     """Marking is AI-assisted, not AI-decided — the parent has the last word."""
     stub_marking("incorrect", awarded=0)
