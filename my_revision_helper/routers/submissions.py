@@ -32,6 +32,7 @@ from ..schemas.study import (
 )
 from ..services import timing
 from ..services.file_store import FileTooLargeError, get_file, store_uploads
+from ..services.page_images import load_page_images, store_page_images
 from ..services.marking_service import (
     load_paper_questions,
     mark_holistically,
@@ -82,6 +83,7 @@ def _marking_response(db: Session, marking: Marking) -> MarkingResponse:
         minutesSpent=submission.minutes_spent if submission else None,
         timed=bool(submission.timed) if submission else False,
         pauseCount=int(submission.pause_count or 0) if submission else 0,
+        pageImageIds=(submission.page_image_ids or []) if submission else [],
         questionMarks=[
             QuestionMarkResponse(
                 id=qm.id,
@@ -144,11 +146,17 @@ async def submit_assignment(
         )
 
     try:
-        file_ids, _ = await store_uploads(
+        file_ids, file_contents = await store_uploads(
             db, files, user_id=scope.user_id, session_id=scope.session_id
         )
     except FileTooLargeError as e:
         raise HTTPException(status_code=413, detail=str(e))
+
+    # Keep every page as a picture as well as as text. A graph the child drew
+    # cannot be written down, and it is often what the marks are for.
+    page_image_ids = store_page_images(
+        db, file_contents, user_id=scope.user_id, session_id=scope.session_id
+    )
 
     extracted = await process_uploaded_files(files, openai_client)
 
@@ -182,6 +190,7 @@ async def submit_assignment(
         note=note or None,
         extracted_text=student_work,
         file_ids=file_ids,
+        page_image_ids=page_image_ids,
         uploaded_files=[f.filename for f in files if f.filename],
         status="marking",
     )
@@ -203,6 +212,8 @@ async def submit_assignment(
                 subject=assignment.subject,
                 client=openai_client,
                 model=model,
+                # So a question answered by drawing is marked from the drawing.
+                pages=load_page_images(db, page_image_ids),
             )
         else:
             result = mark_holistically(
@@ -440,7 +451,8 @@ async def download_submission_file(
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    if file_id not in (submission.file_ids or []):
+    allowed = set(submission.file_ids or []) | set(submission.page_image_ids or [])
+    if file_id not in allowed:
         raise HTTPException(status_code=404, detail="File is not part of this submission")
 
     stored = get_file(db, file_id)

@@ -477,6 +477,41 @@ def test_parse_focus_topics_splits_notes():
 # ---------------------------------------------------------------------------
 
 
+def _one_page_jpeg() -> bytes:
+    """A tiny real JPEG, so page handling is exercised on actual image bytes."""
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (60, 80), "white").save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+def _stub_async(result):
+    """Replace an awaited call with a fixed result."""
+
+    async def _stub(*args, **kwargs):
+        return result
+
+    return _stub
+
+
+def _simple_marking_result():
+    """A marking outcome with no per-question detail, for submission plumbing."""
+    from my_revision_helper.services.marking_service import MarkingResult
+
+    return MarkingResult(
+        marks_awarded=3.0,
+        marks_available=3.0,
+        percentage=100.0,
+        overall_feedback="Good work.",
+        strengths=[],
+        weaknesses=[],
+        weak_topics=[],
+        question_marks=[],
+        model="test",
+    )
+
+
 def _mark(topic: str, awarded: float, available: float, verdict: str) -> QuestionMarkResult:
     return QuestionMarkResult(
         paper_question_id=None,
@@ -1119,6 +1154,220 @@ def test_marking_is_not_reachable_from_another_account(client, child, stub_marki
 
     assert other.get(f"/api/markings/{marking['id']}").status_code == 404
     assert len(other.get("/api/markings").json()["items"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Keeping the pages, not just the words
+# ---------------------------------------------------------------------------
+
+
+class _FakeQuestion:
+    def __init__(self, number, text, expected=None, marks=1):
+        self.number = number
+        self.question_text = text
+        self.expected_answer = expected
+        self.marks = marks
+        self.session_label = None
+        self.marking_notes = None
+
+
+@pytest.mark.unit
+def test_a_question_answered_by_drawing_is_recognised():
+    """
+    "Draw a fully-labelled pie chart" is three marks for a drawing. No
+    transcription of it is good enough to mark, so it has to be spotted.
+    """
+    from my_revision_helper.services.marking_service import needs_the_page
+
+    assert needs_the_page(_FakeQuestion("7b", "Draw a fully-labelled pie chart below."))
+    assert needs_the_page(_FakeQuestion("3", "Plot the points on the grid."))
+    assert needs_the_page(_FakeQuestion("5", "Sketch the graph of y = 2x + 1."))
+    assert needs_the_page(_FakeQuestion("9", "Complete the table of values."))
+
+    assert not needs_the_page(_FakeQuestion("1", "Work out 32 ÷ 4."))
+    assert not needs_the_page(_FakeQuestion("2", "Explain why the answer is 15."))
+
+
+@pytest.mark.unit
+def test_pages_are_attached_only_for_drawing_questions():
+    """Each attached page costs a Vision input, so they are not sent every time."""
+    from unittest.mock import MagicMock
+
+    from my_revision_helper.services.marking_service import _mark_batch
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = MagicMock(
+        choices=[
+            MagicMock(
+                message=MagicMock(
+                    content='{"marks": [{"number": "1", "marks_awarded": 1, '
+                    '"verdict": "correct", "feedback": "Yes"}]}'
+                )
+            )
+        ]
+    )
+    pages = [b"\xff\xd8fake jpeg one", b"\xff\xd8fake jpeg two"]
+
+    # Arithmetic only: the transcript is enough.
+    _mark_batch(client, "gpt-4o", [_FakeQuestion("1", "Work out 6 × 7.")], "6 × 7 = 42", "Maths", pages)
+    content = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert isinstance(content, str)
+
+    # A drawing: the pages go with it.
+    _mark_batch(
+        client,
+        "gpt-4o",
+        [_FakeQuestion("7b", "Draw a fully-labelled pie chart.", marks=3)],
+        "[FIGURE: drawn by student — pie chart]",
+        "Maths",
+        pages,
+    )
+    content = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert isinstance(content, list)
+    assert sum(1 for part in content if part["type"] == "image_url") == 2
+    assert "7b" in content[0]["text"]
+
+
+@pytest.mark.unit
+def test_marking_still_works_when_there_are_no_pages():
+    """Typed answers have no pages, and a drawing question must not break."""
+    from unittest.mock import MagicMock
+
+    from my_revision_helper.services.marking_service import _mark_batch
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content='{"marks": []}'))]
+    )
+
+    _mark_batch(client, "gpt-4o", [_FakeQuestion("7b", "Draw a pie chart.")], "work", "Maths", None)
+
+    content = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    assert isinstance(content, str)
+
+
+@pytest.mark.unit
+def test_only_a_handful_of_pages_go_in_one_call():
+    from unittest.mock import MagicMock
+
+    from my_revision_helper.services.marking_service import MAX_PAGES_PER_BATCH, _mark_batch
+
+    client = MagicMock()
+    client.chat.completions.create.return_value = MagicMock(
+        choices=[MagicMock(message=MagicMock(content='{"marks": []}'))]
+    )
+
+    _mark_batch(
+        client,
+        "gpt-4o",
+        [_FakeQuestion("7b", "Draw a pie chart.")],
+        "work",
+        "Maths",
+        [b"page"] * 20,
+    )
+
+    content = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+    images = [part for part in content if part["type"] == "image_url"]
+    assert len(images) == MAX_PAGES_PER_BATCH
+
+
+@pytest.mark.unit
+def test_a_photo_is_already_a_page():
+    from my_revision_helper.services.page_images import render_pages
+
+    assert render_pages(b"jpeg bytes", "work.jpg") == [b"jpeg bytes"]
+    # Nothing to show for a document with no pages to render.
+    assert render_pages(b"whatever", "notes.txt") == []
+
+
+@pytest.mark.integration
+def test_pages_of_handed_in_work_can_be_fetched_back(client, child, monkeypatch):
+    """The child has to be able to see the chart they drew, not a description."""
+    import my_revision_helper.routers.submissions as subs
+
+    paper = client.post(
+        "/api/papers",
+        data={"subject": "Mathematics", "title": "Pie charts"},
+        files={"files": ("wb.txt", WORKBOOK_TEXT.encode(), "text/plain")},
+    ).json()
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Pie charts",
+            "subject": "Mathematics",
+            "assignmentType": "paper",
+            "paperId": paper["id"],
+        },
+    ).json()
+
+    page_one = _one_page_jpeg()
+
+    monkeypatch.setattr(subs, "get_openai_client", lambda: object())
+    monkeypatch.setattr(subs, "get_reasoning_model", lambda: "gpt-4o")
+    monkeypatch.setattr(
+        subs, "process_uploaded_files", _stub_async({"work.jpg": "[FIGURE: pie chart]"})
+    )
+    monkeypatch.setattr(
+        subs,
+        "mark_per_question",
+        lambda *a, **k: _simple_marking_result(),
+    )
+
+    marking = client.post(
+        f"/api/assignments/{assignment['id']}/submit",
+        files={"files": ("work.jpg", page_one, "image/jpeg")},
+    ).json()
+
+    assert len(marking["pageImageIds"]) == 1
+
+    page_id = marking["pageImageIds"][0]
+    got = client.get(f"/api/submissions/{marking['submissionId']}/files/{page_id}")
+    assert got.status_code == 200
+    assert got.content == page_one
+
+
+@pytest.mark.integration
+def test_pages_of_work_are_not_readable_by_another_account(client, child, monkeypatch):
+    import my_revision_helper.routers.submissions as subs
+
+    paper = client.post(
+        "/api/papers",
+        data={"subject": "Mathematics"},
+        files={"files": ("wb.txt", WORKBOOK_TEXT.encode(), "text/plain")},
+    ).json()
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Pie charts",
+            "subject": "Mathematics",
+            "assignmentType": "paper",
+            "paperId": paper["id"],
+        },
+    ).json()
+
+    monkeypatch.setattr(subs, "get_openai_client", lambda: object())
+    monkeypatch.setattr(subs, "get_reasoning_model", lambda: "gpt-4o")
+    monkeypatch.setattr(subs, "process_uploaded_files", _stub_async({"work.jpg": "answers"}))
+    monkeypatch.setattr(subs, "mark_per_question", lambda *a, **k: _simple_marking_result())
+
+    marking = client.post(
+        f"/api/assignments/{assignment['id']}/submit",
+        files={"files": ("work.jpg", _one_page_jpeg(), "image/jpeg")},
+    ).json()
+
+    from fastapi.testclient import TestClient
+
+    from my_revision_helper.api import app
+
+    other = TestClient(app)
+    other.cookies.set("session_id", "not-mine")
+
+    page_id = marking["pageImageIds"][0]
+    assert (
+        other.get(f"/api/submissions/{marking['submissionId']}/files/{page_id}").status_code == 404
+    )
 
 
 # ---------------------------------------------------------------------------

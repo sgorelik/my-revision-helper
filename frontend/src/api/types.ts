@@ -215,6 +215,8 @@ export interface Marking {
   minutesSpent?: number | null
   timed: boolean
   pauseCount: number
+  /** Pages of the work as images, fetched via the submission file route. */
+  pageImageIds: string[]
 }
 
 export interface MarkingListItem {

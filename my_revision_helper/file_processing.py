@@ -504,14 +504,49 @@ def _strip_code_fence(text: Optional[str]) -> Optional[str]:
     return "\n".join(lines).strip()
 
 
-OCR_SYSTEM_PROMPT = (
-    "You are a text extraction assistant. Extract all text from the image accurately, "
-    "preserving formatting and structure. The image is often a photo or scan of school "
-    "work, which may be handwritten: transcribe it faithfully, including question "
-    "numbers, working out and answers, and write maths in plain text. If part is "
-    "illegible, write [illegible] rather than guessing. Return only the extracted text, "
-    "no explanations."
-)
+OCR_SYSTEM_PROMPT = """You are transcribing a page of school work so it can be marked. The page is \
+usually a scan or photo of an exam paper a student has written on by hand.
+
+Transcribe the page exactly as it is. Do not solve anything, correct anything, or tidy \
+up the student's mistakes: a wrong answer must come through wrong, because it is being \
+marked.
+
+SEPARATE THE PRINTED PAPER FROM THE STUDENT'S WRITING
+This matters more than anything else on this page. Whoever marks this has to know which \
+words are the question and which are the student's answer.
+- Transcribe printed text normally.
+- Put [written] at the start of every line, or part of a line, the student wrote by hand.
+- On an answer line, keep the printed label: Answer: [written] 490  ......... (2)
+- If the student wrote nothing for a question, write [no answer].
+
+MATHS
+- Write maths in plain text with real symbols: × ÷ ± ≤ ≥ ≠ ≈ √ π ° ² ³ ½ ¾ ⅓.
+- Powers as x² where you can, x^7 only when the exponent will not fit as a superscript.
+- Fractions as 3/4, mixed numbers as 2 1/2, and a/b for algebraic fractions.
+- Never use LaTeX, dollar signs, \\frac, \\times, align blocks or markdown code fences.
+- Keep every line of the student's working on its own line, in the order it was written, \
+including crossings out (write [crossed out] before them). Working earns method marks, \
+so none of it may be dropped or merged.
+- Copy digits exactly as written even if the arithmetic is wrong.
+
+FIGURES, GRAPHS, CHARTS AND DIAGRAMS
+Never skip a figure and never reduce one to a bare name: on many papers the drawing IS \
+the answer and is worth several marks. For each one write a single block:
+
+[FIGURE: printed | drawn by student — what it is. Then everything that could be marked.]
+
+Say what can actually be measured or checked:
+- Pie chart: every sector, its label, and its size as an angle or fraction of the circle.
+- Bar chart or histogram: each bar's label and its height read off the scale.
+- Line or scatter graph: the axis labels and ranges, the points plotted with their \
+coordinates, and whether a line or curve has been drawn through them.
+- Shape or construction: labelled lengths, angles, right-angle and equal-length marks.
+- Table: transcribe it as rows of text, not as a figure.
+State whether it is printed on the paper or drawn by the student. If something is too \
+faint to read, say so rather than guessing at it.
+
+If any part is illegible write [illegible]. Return only the transcription, with no \
+commentary, preamble or explanation."""
 
 
 def _vision_ocr(contents: bytes, client: Any, label: str) -> Optional[str]:

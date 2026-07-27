@@ -137,6 +137,15 @@ export async function openInNewTab(path: string): Promise<void> {
   }
 }
 
+/**
+ * An authenticated image as an object URL, for putting in an <img src>.
+ *
+ * The caller owns the URL and must revoke it when the image goes away.
+ */
+export async function fetchObjectUrl(path: string): Promise<string> {
+  return URL.createObjectURL(await fetchBlob(path))
+}
+
 /** Save an authenticated file to disk under a sensible name. */
 export async function downloadFile(path: string, filename: string): Promise<void> {
   const url = URL.createObjectURL(await fetchBlob(path))
@@ -300,6 +309,15 @@ export const api = {
   /** The student-safe printable worksheet, built from the parsed questions. */
   openWorksheet: (assignmentId: string) =>
     openInNewTab(`/assignments/${assignmentId}/worksheet`),
+
+  /**
+   * A page of handed-in work as an image.
+   *
+   * Used to show a child their own drawings back, which a transcript of the
+   * work cannot do.
+   */
+  submissionPageUrl: (submissionId: string, fileId: string) =>
+    fetchObjectUrl(`/submissions/${submissionId}/files/${fileId}`),
 
   // --- Assignments ---------------------------------------------------------
 

@@ -31,6 +31,78 @@ const VERDICT_STYLE: Record<
   not_attempted: { label: 'Not attempted', tone: 'slate', border: 'border-l-slate-300' },
 }
 
+/**
+ * The student's own pages, as they handed them in.
+ *
+ * A transcript cannot hold a pie chart they drew, and that drawing is often
+ * what the marks were for, so the pages themselves are shown next to the marks.
+ */
+function WorkPages({ submissionId, pageIds }: { submissionId: string; pageIds: string[] }) {
+  const [urls, setUrls] = useState<string[]>([])
+  const [failed, setFailed] = useState(false)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (pageIds.length === 0) return
+    let live = true
+    const created: string[] = []
+
+    void (async () => {
+      try {
+        for (const pageId of pageIds) {
+          const url = await api.submissionPageUrl(submissionId, pageId)
+          created.push(url)
+          if (!live) break
+        }
+        if (live) setUrls([...created])
+      } catch {
+        if (live) setFailed(true)
+      }
+    })()
+
+    return () => {
+      live = false
+      created.forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [submissionId, pageIds])
+
+  if (pageIds.length === 0 || failed) return null
+
+  const shown = open ? urls : urls.slice(0, 2)
+
+  return (
+    <section>
+      <SectionTitle
+        title="Your work"
+        subtitle={`${pageIds.length} page${pageIds.length === 1 ? '' : 's'} exactly as you handed them in`}
+        action={
+          pageIds.length > 2 ? (
+            <Button variant="secondary" onClick={() => setOpen(!open)}>
+              {open ? 'Show fewer' : `Show all ${pageIds.length}`}
+            </Button>
+          ) : undefined
+        }
+      />
+      {urls.length === 0 ? (
+        <Spinner label="Loading your pages…" />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2">
+          {shown.map((url, index) => (
+            <a key={url} href={url} target="_blank" rel="noreferrer" className="block">
+              <img
+                src={url}
+                alt={`Page ${index + 1} of your work`}
+                className="w-full rounded-xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md"
+              />
+              <div className="mt-1 text-center text-xs text-slate-500">Page {index + 1}</div>
+            </a>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
 function QuestionCard({
   mark,
   markingId,
@@ -239,6 +311,8 @@ export default function MarkingPage() {
           </div>
         </Card>
       )}
+
+      <WorkPages submissionId={marking.submissionId} pageIds={marking.pageImageIds || []} />
 
       {marking.weakTopics.length > 0 && (
         <Card className="border-amber-200 bg-amber-50">

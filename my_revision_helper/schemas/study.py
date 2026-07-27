@@ -374,6 +374,9 @@ class MarkingResponse(BaseModel):
     minutesSpent: Optional[int] = None
     timed: bool = False
     pauseCount: int = 0
+    # The pages of the work as images, so the student sees what they actually
+    # drew rather than a description of it. Fetch via the submission file route.
+    pageImageIds: List[str] = Field(default_factory=list)
 
 
 class MarkingListItem(BaseModel):

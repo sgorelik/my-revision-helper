@@ -429,6 +429,9 @@ class Submission(Base):
     note = Column(Text)  # Child's own comment
     extracted_text = Column(Text)  # OCR/text of the handed-in work
     file_ids = Column(JSON)  # List of stored_files ids
+    # One image per page of the work, kept because a transcript cannot hold a
+    # graph the child drew. Shown back to them and used when marking a diagram.
+    page_image_ids = Column(JSON)  # List of stored_files ids, in page order
     uploaded_files = Column(JSON)  # List of filenames, for display
     status = Column(String, default="submitted")  # submitted, marking, marked, failed
     submitted_at = Column(DateTime, default=datetime.utcnow)

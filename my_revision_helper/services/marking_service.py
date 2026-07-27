@@ -19,6 +19,7 @@ fit in one response, and so a single malformed batch cannot lose the whole paper
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -81,6 +82,12 @@ Marking rules:
   grammar where the question is explicitly assessing written accuracy.
 - For extended written answers, judge against what the key says a full-mark response
   needs, and say specifically what was missing.
+- When a question is answered by a drawing (a pie chart, graph, bar chart, plotted
+  points, a construction) and you are shown the page, mark the drawing itself. Working
+  out the right angles and then drawing them wrong is one of the commonest ways to lose
+  these marks, so correct arithmetic beside the diagram is NOT evidence that the diagram
+  is right. Read the drawing, compare it with the key, and say in student_answer what
+  you actually saw in it.
 - feedback must be usable: name what to fix, not just "incorrect". Never simply restate
   the correct answer without explaining the step the student missed.
 - Return exactly one entry per question given, using the same "number" values.
@@ -178,15 +185,66 @@ def _describe_questions(questions: Sequence[PaperQuestion]) -> str:
     return "\n".join(lines)
 
 
+# Questions whose answer is a drawing rather than a sentence. For these the
+# transcript is not enough to mark from and the pages themselves are attached.
+DRAWING_WORDS = (
+    "draw",
+    "sketch",
+    "plot",
+    "graph",
+    "chart",
+    "diagram",
+    "shade",
+    "label the",
+    "construct",
+    "complete the table",
+    "on the grid",
+    "on the axes",
+)
+
+# Attaching a page costs a Vision input, so a batch sends a handful at most.
+MAX_PAGES_PER_BATCH = 6
+
+
+def needs_the_page(question: PaperQuestion) -> bool:
+    """
+    Whether this question can only be marked by looking at the work.
+
+    "Draw a fully-labelled pie chart" is three marks for a drawing: no
+    transcription of it is good enough to mark against, so the page is sent.
+    """
+    text = f"{question.question_text or ''} {question.expected_answer or ''}".lower()
+    return any(word in text for word in DRAWING_WORDS)
+
+
+def _image_parts(pages: Sequence[bytes]) -> List[Dict[str, Any]]:
+    """Page images as Vision content parts."""
+    parts: List[Dict[str, Any]] = []
+    for image in pages[:MAX_PAGES_PER_BATCH]:
+        encoded = base64.b64encode(image).decode("utf-8")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
+            }
+        )
+    return parts
+
+
 def _mark_batch(
     client: Any,
     model: str,
     questions: Sequence[PaperQuestion],
     student_work: str,
     subject: str,
+    pages: Optional[Sequence[bytes]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Mark one batch of questions. Returns question number -> result payload.
+
+    When the batch contains a question answered by drawing, the pages of the
+    work are attached so the drawing can be marked as a drawing rather than
+    from a description of it.
 
     Raises on API failure so the caller can decide how to degrade.
     """
@@ -196,11 +254,36 @@ def _mark_batch(
         f"=== STUDENT'S WORK ===\n{student_work}"
     )
 
+    drawing_questions = [q for q in questions if needs_the_page(q)]
+    attach = list(pages or []) if drawing_questions else []
+
+    if attach:
+        numbers = ", ".join(str(q.number) for q in drawing_questions)
+        user_content += (
+            f"\n\n=== THE PAGES THEMSELVES ===\n"
+            f"Question(s) {numbers} are answered by a drawing. Images of the student's "
+            f"pages follow.\n"
+            f"Mark those questions from the drawing in the images, not from the "
+            f"transcription above and not from the student's calculations.\n"
+            f"Look at the drawing and judge it: are the sectors, bars, points or lines "
+            f"the sizes and positions the key requires, and is every part labelled? "
+            f"Estimate the angles or read the values off the scale and compare them "
+            f"with the key. A student who calculates correctly and then draws it wrong "
+            f"gets the calculation marks, not the drawing marks — check the two agree "
+            f"before awarding full marks.\n"
+            f"In student_answer, describe what the drawing actually shows, including "
+            f"the sizes you read off it."
+        )
+        message: Any = [{"type": "text", "text": user_content}] + _image_parts(attach)
+        logger.info(f"Marking questions {numbers} with {len(attach[:MAX_PAGES_PER_BATCH])} page image(s)")
+    else:
+        message = user_content
+
     response = client.chat.completions.create(
         model=model,
         messages=[
             {"role": "system", "content": MARKING_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
+            {"role": "user", "content": message},
         ],
         temperature=0,
         response_format={"type": "json_object"},
@@ -234,14 +317,20 @@ def mark_per_question(
     subject: str,
     client: Any,
     model: str,
+    pages: Optional[Sequence[bytes]] = None,
 ) -> MarkingResult:
-    """Mark a parsed paper question by question."""
+    """
+    Mark a parsed paper question by question.
+
+    `pages` are images of the handed-in work, used for questions answered by
+    drawing, where the transcript cannot carry the answer.
+    """
     results: Dict[str, Dict[str, Any]] = {}
 
     for start in range(0, len(questions), BATCH_SIZE):
         batch = questions[start : start + BATCH_SIZE]
         try:
-            results.update(_mark_batch(client, model, batch, student_work, subject))
+            results.update(_mark_batch(client, model, batch, student_work, subject, pages))
         except Exception as e:
             # A failed batch leaves those questions unmarked rather than
             # failing the whole paper.

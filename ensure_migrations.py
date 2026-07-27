@@ -101,6 +101,8 @@ def main():
         ("assignments", "timer_stopped_at", "timer_stopped_at TIMESTAMP"),
         ("submissions", "timed", "timed BOOLEAN DEFAULT FALSE"),
         ("submissions", "pause_count", "pause_count INTEGER DEFAULT 0"),
+        # Pages of the work kept as images, since a transcript loses the graphs
+        ("submissions", "page_image_ids", "page_image_ids JSON"),
     ]
     
     all_good = True
