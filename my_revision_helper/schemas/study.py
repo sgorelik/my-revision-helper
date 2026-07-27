@@ -146,6 +146,9 @@ class PaperListItem(BaseModel):
     # an answer key was found inside it, which is the usual case for a workbook.
     originalIsStudentSafe: bool = False
     resources: List[ResourceLink] = Field(default_factory=list)
+    # Present on the list too, so the library can tell which papers have an
+    # original file to open or to scan for links.
+    sourceFileId: Optional[str] = None
     parseStatus: str = "pending"
     createdAt: str
 
@@ -158,7 +161,6 @@ class PaperListResponse(BaseModel):
 class PaperDetailResponse(PaperListItem):
     questions: List[PaperQuestionResponse] = Field(default_factory=list)
     questionText: Optional[str] = None  # Student-safe document text
-    sourceFileId: Optional[str] = None
     parseError: Optional[str] = None
 
 

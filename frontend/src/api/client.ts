@@ -280,6 +280,15 @@ export const api = {
     },
   ) => send<Paper>('PATCH', `/papers/${paperId}`, payload),
 
+  /**
+   * Find the links a stored document already contains.
+   *
+   * Only adds; links added by hand are kept. For papers uploaded before
+   * extraction existed.
+   */
+  extractPaperLinks: (paperId: string) =>
+    send<Paper>('POST', `/papers/${paperId}/extract-links`),
+
   deletePaper: (paperId: string) => send<void>('DELETE', `/papers/${paperId}`),
 
   /**

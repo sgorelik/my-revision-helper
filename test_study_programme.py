@@ -1122,6 +1122,152 @@ def test_marking_is_not_reachable_from_another_account(client, child, stub_marki
 
 
 # ---------------------------------------------------------------------------
+# Links the documents already contain
+# ---------------------------------------------------------------------------
+
+
+def _docx_with_hyperlinks(links, body_text="Session 1 — Indices"):
+    """
+    Build a minimal .docx whose links are stored the way Word really stores them.
+
+    Deliberately puts the URLs *only* in the relationship file, never in the
+    document text, because that is what a real workbook does and it is what makes
+    text-scraping useless.
+    """
+    rels = ['<?xml version="1.0" encoding="UTF-8"?>', "<Relationships>"]
+    body = [f"<w:p><w:r><w:t>{body_text}</w:t></w:r></w:p>"]
+
+    for index, (url, anchor) in enumerate(links, start=1):
+        rel_id = f"rId{index}"
+        rels.append(
+            f'<Relationship Id="{rel_id}" '
+            'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" '
+            f'Target="{url}" TargetMode="External"/>'
+        )
+        body.append(f'<w:hyperlink r:id="{rel_id}"><w:r><w:t>{anchor}</w:t></w:r></w:hyperlink>')
+
+    rels.append("</Relationships>")
+
+    document = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<w:body>{"".join(body)}</w:body></w:document>'
+    )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", document)
+        archive.writestr("word/_rels/document.xml.rels", "".join(rels))
+    return buffer.getvalue()
+
+
+@pytest.mark.unit
+def test_docx_links_come_from_the_relationship_file_not_the_text():
+    """
+    The whole reason this exists: a Word hyperlink's address is not in the
+    visible text, so scanning extracted text finds nothing in a real workbook.
+    """
+    from my_revision_helper.file_processing import _docx_text_from_bytes
+    from my_revision_helper.services.link_extraction import extract_links, links_from_text
+
+    content = _docx_with_hyperlinks(
+        [
+            (
+                "https://www.khanacademy.org/math/algebra/exponents",
+                "Khan Academy: Exponent properties",
+            )
+        ]
+    )
+
+    # Confirm the premise before relying on it.
+    assert "khanacademy" not in _docx_text_from_bytes(content)
+    assert links_from_text(_docx_text_from_bytes(content)) == []
+
+    links = extract_links({"Maths_Week1_Workbook.docx": content})
+    assert [l["url"] for l in links] == ["https://www.khanacademy.org/math/algebra/exponents"]
+    # The anchor text becomes the label, which is why it is worth the trouble.
+    assert links[0]["label"] == "Khan Academy: Exponent properties"
+
+
+@pytest.mark.unit
+def test_repeated_and_unlabelled_links_are_tidied_up():
+    from my_revision_helper.services.link_extraction import extract_links
+
+    content = _docx_with_hyperlinks(
+        [
+            ("https://www.bbc.co.uk/bitesize/subjects/z3kw2hv", "BBC Bitesize: English"),
+            # The same link again, as in the real English workbook.
+            ("https://www.bbc.co.uk/bitesize/subjects/z3kw2hv", "BBC Bitesize"),
+            # Anchor text that is just the URL is no more useful than the URL.
+            ("https://www.khanacademy.org/humanities/grammar", "https://www.khanacademy.org/humanities/grammar"),
+        ]
+    )
+
+    links = extract_links({"English_Week1_Workbook.docx": content})
+
+    assert len(links) == 2
+    assert links[0]["label"] == "BBC Bitesize: English"
+    assert links[1]["label"] == "Khan Academy"
+
+
+@pytest.mark.unit
+def test_link_kind_is_guessed_from_the_destination():
+    from my_revision_helper.services.link_extraction import kind_for_url
+
+    assert kind_for_url("https://www.youtube.com/watch?v=abc") == "watch"
+    assert kind_for_url("https://www.bbc.co.uk/bitesize/guides/z1/revision/1") == "read"
+    assert kind_for_url("https://quizlet.com/set/123") == "practise"
+
+
+@pytest.mark.unit
+def test_plain_text_urls_are_found_and_trimmed():
+    from my_revision_helper.services.link_extraction import extract_links
+
+    links = extract_links(
+        text="Watch https://www.khanacademy.org/math/algebra. Then read (https://example.com/notes)."
+    )
+
+    assert [l["url"] for l in links] == [
+        "https://www.khanacademy.org/math/algebra",
+        "https://example.com/notes",
+    ]
+
+
+@pytest.mark.unit
+def test_non_hyperlink_relationships_are_ignored():
+    """An externally referenced image is not reading material."""
+    from my_revision_helper.services.link_extraction import links_from_docx
+
+    document = (
+        '<?xml version="1.0"?><w:document '
+        'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body><w:p><w:r><w:t>Nothing here</w:t></w:r></w:p></w:body></w:document>"
+    )
+    rels = (
+        '<?xml version="1.0"?><Relationships>'
+        '<Relationship Id="rId1" '
+        'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        'Target="https://example.com/logo.png" TargetMode="External"/>'
+        "</Relationships>"
+    )
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", document)
+        archive.writestr("word/_rels/document.xml.rels", rels)
+
+    assert links_from_docx(buffer.getvalue()) == []
+
+
+@pytest.mark.unit
+def test_a_document_that_is_not_a_docx_is_not_an_error():
+    from my_revision_helper.services.link_extraction import links_from_docx
+
+    assert links_from_docx(b"just some bytes") == []
+
+
+# ---------------------------------------------------------------------------
 # Reading metadata off filenames
 # ---------------------------------------------------------------------------
 
@@ -1322,6 +1468,123 @@ def test_worksheet_never_contains_the_answer_key(client, child):
     assert "Answer Key" not in body
     # The questions themselves are present, so this is not passing by being empty.
     assert "Simplify" in body or "question" in body.lower()
+
+
+@pytest.mark.integration
+def test_uploading_a_workbook_picks_up_its_own_links(client, child):
+    """A workbook that already names its videos should not need them retyped."""
+    content = _docx_with_hyperlinks(
+        [
+            ("https://www.khanacademy.org/math/algebra/exponents", "Khan Academy: Exponents"),
+            ("https://www.bbc.co.uk/bitesize/subjects/z3kw2hv", "BBC Bitesize: Maths"),
+        ]
+    )
+
+    paper = client.post(
+        "/api/papers",
+        data={"subject": "Mathematics", "title": "Week 1"},
+        files={
+            "files": (
+                "Maths_Week1_Workbook.docx",
+                content,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    ).json()
+
+    assert [l["label"] for l in paper["resources"]] == [
+        "Khan Academy: Exponents",
+        "BBC Bitesize: Maths",
+    ]
+
+    # And they reach the student's worksheet without further work.
+    assignment = client.post(
+        "/api/assignments",
+        json={
+            "childId": child,
+            "title": "Week 1",
+            "subject": "Mathematics",
+            "assignmentType": "paper",
+            "paperId": paper["id"],
+        },
+    ).json()
+
+    body = client.get(f"/api/assignments/{assignment['id']}/worksheet").text
+    assert "khanacademy.org/math/algebra/exponents" in body
+    assert "Khan Academy: Exponents" in body
+
+
+@pytest.mark.integration
+def test_extracted_links_come_before_ones_added_by_hand(client):
+    content = _docx_with_hyperlinks(
+        [("https://www.khanacademy.org/math/algebra/exponents", "Khan Academy: Exponents")]
+    )
+
+    paper = client.post(
+        "/api/papers",
+        data={
+            "subject": "Mathematics",
+            "resourceUrl": "https://example.com/my-own-note",
+            "resourceLabel": "Read my note",
+        },
+        files={"files": ("Maths_Week1.docx", content, "text/plain")},
+    ).json()
+
+    assert [l["label"] for l in paper["resources"]] == [
+        "Khan Academy: Exponents",
+        "Read my note",
+    ]
+
+
+@pytest.mark.integration
+def test_scanning_an_existing_paper_adds_links_without_losing_manual_ones(client):
+    """
+    Papers uploaded before extraction existed need a way to catch up, and it must
+    not discard links a parent curated in the meantime.
+    """
+    content = _docx_with_hyperlinks(
+        [("https://www.khanacademy.org/math/algebra/exponents", "Khan Academy: Exponents")]
+    )
+
+    paper = client.post(
+        "/api/papers",
+        data={"subject": "Mathematics"},
+        files={"files": ("Maths_Week1.docx", content, "text/plain")},
+    ).json()
+
+    # Simulate the pre-extraction state: only a hand-added link.
+    updated = client.patch(
+        f"/api/papers/{paper['id']}",
+        json={"resources": [{"url": "https://example.com/mine", "label": "Mine", "kind": "read"}]},
+    ).json()
+    assert [l["url"] for l in updated["resources"]] == ["https://example.com/mine"]
+
+    scanned = client.post(f"/api/papers/{paper['id']}/extract-links").json()
+
+    # The document's link is found and put first; the manual one survives.
+    assert [l["label"] for l in scanned["resources"]] == ["Khan Academy: Exponents", "Mine"]
+
+    # Scanning again is idempotent rather than duplicating.
+    again = client.post(f"/api/papers/{paper['id']}/extract-links").json()
+    assert len(again["resources"]) == 2
+
+
+@pytest.mark.integration
+def test_link_scan_is_not_reachable_from_another_account(client):
+    paper = client.post(
+        "/api/papers",
+        data={"subject": "Mathematics"},
+        files={"files": ("wb.txt", WORKBOOK_TEXT.encode(), "text/plain")},
+    ).json()
+
+    from fastapi.testclient import TestClient
+
+    from my_revision_helper.api import app
+
+    other = TestClient(app)
+    other.cookies.set("session_id", "not-mine")
+
+    assert other.post(f"/api/papers/{paper['id']}/extract-links").status_code == 404
 
 
 @pytest.mark.integration

@@ -140,10 +140,14 @@ def _resource_block(resources: List[Dict[str, str]]) -> str:
       </div>"""
         )
 
+    # A workbook can carry four or five links. One per full-width row would push
+    # the questions off page one, so they pair up once there are more than two.
+    layout = "grid" if len(resources) > 2 else "stack"
+
     return f"""
   <section class="resources">
     <h2>Before you start</h2>
-    {''.join(cards)}
+    <div class="resource-list {layout}">{''.join(cards)}</div>
     <p class="resource-hint">
       Scan the code or type the address to watch it. Come back to it any time you
       get stuck — you are not expected to remember it all first time.
@@ -203,8 +207,13 @@ STYLES = """
   .namebar span { flex: 1; border-bottom: 1px solid var(--line); padding-bottom: 2px; }
   h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
   .resources { border: 1.5px solid var(--ink); border-radius: 10px; padding: 14px; margin-bottom: 22px; }
+  .resource-list.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; }
   .resource { display: flex; gap: 14px; align-items: center; margin-bottom: 10px; }
   .resource:last-of-type { margin-bottom: 0; }
+  .resource-list.grid .resource { margin-bottom: 0; }
+  /* Smaller codes when they are paired up, still comfortably scannable. */
+  .resource-list.grid .qr { width: 62px; height: 62px; }
+  .resource-list.grid .resource-url { font-size: 10px; }
   .qr { width: 78px; height: 78px; flex: none; }
   .qr svg { width: 100%; height: 100%; display: block; }
   .resource-label { font-weight: 700; }

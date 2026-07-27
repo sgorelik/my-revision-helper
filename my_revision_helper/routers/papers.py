@@ -36,6 +36,7 @@ from ..schemas.study import (
 )
 from ..subjects import normalise_subject, subject_from_filename, week_from_filename
 from ..services.file_store import FileTooLargeError, get_file, store_uploads
+from ..services.link_extraction import extract_links, merge_extracted
 from ..services.paper_parser import guess_title, parse_paper
 from ..services.worksheet import normalise_resources
 from ..services.scope import build_scope, ensure_user_row, restrict_to_owner
@@ -70,6 +71,7 @@ def _list_item(paper: Paper, question_count: int) -> PaperListItem:
         # over as-is; the generated worksheet is used instead.
         originalIsStudentSafe=not paper.answer_key_text,
         resources=normalise_resources(paper.resources),
+        sourceFileId=paper.source_file_id,
         parseStatus=paper.parse_status or "pending",
         createdAt=paper.created_at.isoformat() if paper.created_at else "",
     )
@@ -97,7 +99,7 @@ async def _create_paper(
     files that worked.
     """
     try:
-        file_ids, _ = await store_uploads(
+        file_ids, file_contents = await store_uploads(
             db, files, user_id=scope.user_id, session_id=scope.session_id
         )
     except FileTooLargeError as e:
@@ -143,7 +145,14 @@ async def _create_paper(
         topics=parsed.topics or [],
         week_label=week_label.strip() or None,
         year_group=year_group.strip() or None,
-        resources=normalise_resources(resources or []),
+        # The document's own links come first: a workbook usually already names
+        # the video to watch, and its hyperlinks carry better labels than
+        # anything typed in by hand.
+        resources=normalise_resources(
+            merge_extracted(
+                extract_links(file_contents=file_contents, text=full_text), resources or []
+            )
+        ),
         source_file_id=file_ids[0] if file_ids else None,
         full_text=full_text,
         question_text=parsed.question_text,
@@ -429,7 +438,6 @@ async def get_paper(
             for q in questions
         ],
         questionText=paper.question_text if includeText else None,
-        sourceFileId=paper.source_file_id,
         parseError=paper.parse_error,
     )
 
@@ -536,6 +544,68 @@ async def download_paper_file(
     )
 
 
+def _refresh_links(db: Session, paper: Paper) -> int:
+    """
+    Re-read a stored document and merge in any links it contains.
+
+    Links added by hand are kept: this only adds what the document itself
+    carries, so scanning an already-curated paper cannot lose work. Returns how
+    many new links were found.
+    """
+    if not paper.source_file_id:
+        return 0
+
+    stored = get_file(db, paper.source_file_id)
+    if not stored or not stored.content:
+        return 0
+
+    extracted = extract_links(
+        file_contents={stored.filename or "upload": stored.content},
+        text=paper.full_text,
+    )
+    if not extracted:
+        return 0
+
+    existing = normalise_resources(paper.resources)
+    known = {link["url"] for link in existing}
+    added = [link for link in extracted if link["url"] not in known]
+    if not added:
+        return 0
+
+    # New document links go in front, matching a fresh upload, with anything
+    # curated by hand kept after them.
+    paper.resources = normalise_resources(added + existing)
+    return len(added)
+
+
+@router.post("/papers/{paper_id}/extract-links", response_model=PaperDetailResponse)
+async def extract_paper_links(
+    paper_id: str,
+    user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
+    db: Optional[Session] = Depends(get_db),
+    session_id: str = Depends(get_session_id),
+) -> PaperDetailResponse:
+    """
+    Scan a stored document for the links it already contains.
+
+    Papers uploaded before links were extracted automatically can pick them up
+    this way. Unlike re-parsing, this only adds links and touches nothing else,
+    so it is safe on a paper that already has marked work against it.
+    """
+    db = _require_db(db)
+    scope = build_scope(user, session_id)
+
+    paper = restrict_to_owner(db.query(Paper).filter(Paper.id == paper_id), Paper, scope).first()
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found")
+
+    added = _refresh_links(db, paper)
+    db.commit()
+
+    logger.info(f"Link scan on paper {paper.id} found {added} new link(s)")
+    return await get_paper(paper_id, False, user, db, session_id)
+
+
 @router.post("/papers/{paper_id}/reparse", response_model=PaperDetailResponse)
 async def reparse_paper(
     paper_id: str,
@@ -584,6 +654,9 @@ async def reparse_paper(
     paper.parse_status = parsed.parse_status
     paper.parse_error = parsed.parse_error
     paper.parsed_at = datetime.utcnow()
+
+    # Re-parsing is also a good moment to pick up links the document carries.
+    _refresh_links(db, paper)
 
     for question in parsed.questions:
         db.add(

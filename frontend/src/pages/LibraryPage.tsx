@@ -27,6 +27,7 @@ type StagedFile = {
   status: 'pending' | 'uploading' | 'ok' | 'failed'
   error?: string
   title?: string
+  foundLinks?: number
 }
 
 /**
@@ -134,6 +135,7 @@ function BulkUploadPanel({ onUploaded }: { onUploaded: () => void }) {
         if (item.paper) {
           patch.title = item.paper.title
           patch.subject = item.paper.subject
+          patch.foundLinks = item.paper.resources.length
         }
         update(item.filename, patch)
       })
@@ -193,7 +195,12 @@ function BulkUploadPanel({ onUploaded }: { onUploaded: () => void }) {
                   {item.file.name}
                 </span>
                 {item.status === 'ok' && (
-                  <span className="text-xs font-medium text-emerald-700">Added</span>
+                  <span className="text-xs font-medium text-emerald-700">
+                    Added
+                    {item.foundLinks
+                      ? ` · ${item.foundLinks} link${item.foundLinks === 1 ? '' : 's'}`
+                      : ''}
+                  </span>
                 )}
                 {item.status === 'uploading' && (
                   <span className="text-xs text-slate-500">Reading…</span>
@@ -425,6 +432,12 @@ function UploadPanel({ onUploaded }: { onUploaded: () => void }) {
               ? ' · answer key found and hidden from students'
               : ' · no answer key found, so this will be marked on subject knowledge alone'}
           </div>
+          {result.resources.length > 0 && (
+            <div className="mt-1 text-emerald-700">
+              {result.resources.length} link{result.resources.length === 1 ? '' : 's'} found in the
+              document: {result.resources.map((r) => r.label || r.url).join(', ')}
+            </div>
+          )}
           {result.parseError && (
             <div className="mt-1 text-amber-700">Note: {result.parseError}</div>
           )}
@@ -457,7 +470,30 @@ function LinksModal({
   const [url, setUrl] = useState('')
   const [label, setLabel] = useState('')
   const [saving, setSaving] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  const scan = async () => {
+    setScanning(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const updated = await api.extractPaperLinks(paper.id)
+      const found = updated.resources.length - links.length
+      setLinks(updated.resources)
+      setNotice(
+        found > 0
+          ? `Found ${found} link${found === 1 ? '' : 's'} in the document.`
+          : 'No new links in this document.',
+      )
+      onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not scan the document')
+    } finally {
+      setScanning(false)
+    }
+  }
 
   const add = () => {
     const trimmed = url.trim()
@@ -493,6 +529,19 @@ function LinksModal({
         <p className="mt-1 text-sm text-slate-500">
           Shown above the questions and printed on the worksheet with a QR code.
         </p>
+
+        {paper.sourceFileId && (
+          <div className="mt-3 flex items-center gap-3 rounded-xl bg-slate-50 p-3">
+            <Button size="sm" variant="secondary" onClick={scan} disabled={scanning}>
+              {scanning ? 'Reading the document…' : 'Find links in the document'}
+            </Button>
+            <p className="text-xs text-slate-500">
+              Word links are hidden behind their text, so they have to be read out of the file.
+            </p>
+          </div>
+        )}
+
+        {notice && <p className="mt-3 text-sm text-emerald-700">{notice}</p>}
 
         <div className="mt-4 space-y-2">
           {links.length === 0 && (
@@ -799,10 +848,12 @@ export default function LibraryPage() {
                     <Pill tone="amber">No key</Pill>
                   )}
                   {paper.parseStatus === 'failed' && <Pill tone="red">Parse failed</Pill>}
-                  {paper.resources.length > 0 && (
+                  {paper.resources.length > 0 ? (
                     <Pill tone="blue">
                       {paper.resources.length} link{paper.resources.length === 1 ? '' : 's'}
                     </Pill>
+                  ) : (
+                    paper.sourceFileId && <Pill tone="slate">No links yet</Pill>
                   )}
                 </div>
 
