@@ -28,6 +28,7 @@ from my_revision_helper.services.marking_service import (
     mark_per_question,
 )
 from my_revision_helper.services.paper_parser import (
+    guess_duration,
     guess_title,
     parse_paper,
     split_answer_key,
@@ -82,6 +83,39 @@ Session 1 — Indices
 Session 2 — Expanding & factorising
 1.  3x + 12
 2.  Difference of squares: (x − 3)(x + 3)
+"""
+
+
+# A past paper, shaped like the ISEB Common Entrance papers we actually upload:
+# no sessions, a candidate name box, page separators from the PDF read, one
+# question spread over several sub-parts, and marks printed as a bare "(2)".
+PAST_PAPER_TEXT = """--- Page 1 ---
+SURNAME .................................................. FIRST NAME ..................................................
+COMMON ENTRANCE EXAMINATION AT 13+
+MATHEMATICS
+LEVEL 2: CALCULATOR PAPER
+Wednesday 5 June 2019
+Please read this information before the examination starts.
+This examination is 60 minutes long.
+--- Page 2 ---
+1. (i) Write 3.7924 correct to 1 significant figure.
+Answer: .................................. (1)
+(ii) Work out 5.2 × 3 and give your answer to 3 significant figures.
+Answer: .................................. (2)
+S.A. 28319327 2
+--- Page 3 ---
+2. On Thursday, Form 8C ask 24 teachers how they travel to school each day.
+3 travel by bus
+5 travel by bicycle
+10 travel by car
+6 walk
+(i) What angle is needed to show 1 teacher on a pie chart?
+Answer: .................................. (1)
+(ii) Draw a fully-labelled pie chart showing how teachers travel to school.
+(3)
+--- Page 4 ---
+3. Factorise fully 24x + 16 and check your answer expands to (x + 3)(x + 3).
+Answer: .................................. (2)
 """
 
 
@@ -300,6 +334,100 @@ def test_topic_from_session(label, expected):
 @pytest.mark.unit
 def test_guess_title_uses_the_document_heading():
     assert guess_title(WORKBOOK_TEXT) == "Mathematics — Week 1 Workbook"
+
+
+# ---------------------------------------------------------------------------
+# Past papers
+#
+# These arrive as PDFs of real exam papers rather than generated workbooks, and
+# used to import with no questions at all because the parser insisted on a
+# "Session N" heading that a past paper does not have.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_a_past_paper_without_sessions_still_yields_questions():
+    parsed = parse_paper(PAST_PAPER_TEXT, subject="Mathematics")
+
+    assert parsed.parse_status == "parsed"
+    assert [q.number for q in parsed.questions] == ["1", "2", "3"]
+
+
+@pytest.mark.unit
+def test_a_question_keeps_the_sub_parts_below_it():
+    """The body carries the data, so losing it leaves an unanswerable question."""
+    parsed = parse_paper(PAST_PAPER_TEXT, subject="Mathematics")
+    pie_chart = parsed.questions[1]
+
+    assert "10 travel by car" in pie_chart.question_text
+    assert "fully-labelled pie chart" in pie_chart.question_text
+
+
+@pytest.mark.unit
+def test_marks_printed_beside_each_answer_space_are_added_up():
+    parsed = parse_paper(PAST_PAPER_TEXT, subject="Mathematics")
+
+    assert parsed.questions[0].marks == 3  # (1) + (2)
+    assert parsed.questions[1].marks == 4  # (1) + (3)
+    assert parsed.total_marks == 9
+
+
+@pytest.mark.unit
+def test_brackets_around_algebra_are_not_read_as_marks():
+    """"(x + 3)" ends a line in question 3, and is not a mark allocation."""
+    parsed = parse_paper(PAST_PAPER_TEXT, subject="Mathematics")
+
+    assert parsed.questions[2].marks == 2
+
+
+@pytest.mark.unit
+def test_a_numbered_line_inside_a_question_does_not_start_a_new_one():
+    """"3 travel by bus" and friends are data, not questions 3 to 6."""
+    parsed = parse_paper(PAST_PAPER_TEXT, subject="Mathematics")
+
+    assert len(parsed.questions) == 3
+
+
+@pytest.mark.unit
+def test_page_separators_and_footers_are_kept_out_of_the_questions():
+    parsed = parse_paper(PAST_PAPER_TEXT, subject="Mathematics")
+
+    for question in parsed.questions:
+        assert "--- Page" not in question.question_text
+        assert "28319327" not in question.question_text
+
+
+@pytest.mark.unit
+def test_writing_lines_are_stripped_from_the_question():
+    parsed = parse_paper(PAST_PAPER_TEXT, subject="Mathematics")
+
+    assert "......" not in parsed.questions[0].question_text
+    assert "Answer:" in parsed.questions[0].question_text
+
+
+@pytest.mark.unit
+def test_guess_title_says_which_paper_it_is():
+    """Every ISEB paper opens with the same board heading, so that alone is no use."""
+    title = guess_title(PAST_PAPER_TEXT)
+
+    assert "LEVEL 2: CALCULATOR PAPER" in title
+    assert "2019" in title
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rubric,expected",
+    [
+        ("This examination is 60 minutes long.", 60),
+        ("Time allowed: 45 minutes", 45),
+        ("You have 1 hour 30 minutes for this paper.", 90),
+        ("2 hours", 120),
+        ("Answer all questions.", None),
+        ("Question 7 is worth 3 marks", None),
+    ],
+)
+def test_guess_duration_reads_the_rubric(rubric: str, expected):
+    assert guess_duration(f"Maths paper\n{rubric}\n1. A question here.") == expected
 
 
 @pytest.mark.unit

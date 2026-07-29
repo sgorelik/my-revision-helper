@@ -24,6 +24,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..llm import chat_completion
+
 logger = logging.getLogger(__name__)
 
 # Headings that mark the start of the solutions section. Ordered longest-first
@@ -52,6 +54,27 @@ BAND_PATTERNS = [
 SESSION_PATTERN = re.compile(r"^\s*(session\s+\d+.*)$", re.I)
 NUMBERED_ITEM_PATTERN = re.compile(r"^\s*(\d+)[.)]\s+(.*)$")
 MARKS_PATTERN = re.compile(r"\[(\d+)\s*marks?\]", re.I)
+
+# Past papers print the mark allocation as a bare number in brackets, either on
+# a line of its own or at the end of the answer line: "Answer: ......... (2)".
+# Anchored to the end of the line and digits only, so algebra such as "(x + 3)"
+# and a mid-sentence aside are both left alone.
+TRAILING_MARKS_PATTERN = re.compile(r"\((\d{1,2})\)\s*$")
+
+# The page separator inserted while reading a PDF, plus the printer's reference
+# in the page footer. Neither belongs in a question.
+PAGE_MARKER_PATTERN = re.compile(r"^-{2,}\s*page\s+\d+\s*-{2,}$", re.I)
+PAGE_FOOTER_PATTERN = re.compile(r"^[A-Z]{0,4}\.?\s?[A-Z]{0,2}\.?\s*\d{5,}(\s+\d{1,3})?$")
+
+# Rows of dots for the pupil to write on. Useful on paper, noise in a question.
+DOTTED_LEADER_PATTERN = re.compile(r"\.{4,}")
+
+# Lines that say which paper this is, rather than which exam board set it.
+PAPER_IDENTITY_PATTERN = re.compile(
+    r"\b(level\s*\d|paper\s*\d?|non[-\s]?calculator|calculator|higher|foundation"
+    r"|section\s*[a-z\d]|(?:19|20)\d\d)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -119,23 +142,67 @@ def split_answer_key(full_text: str) -> Tuple[str, Optional[str]]:
     return full_text.strip(), None
 
 
+def _tidy(line: str) -> str:
+    """Drop the writing space, keep the words."""
+    return DOTTED_LEADER_PATTERN.sub(" ", line).strip()
+
+
+def _marks_in(body: str) -> Optional[int]:
+    """
+    The marks a question is worth, read from whatever notation it uses.
+
+    A workbook prints "[3 marks]" once per question. A past paper prints a bare
+    "(2)" beside each answer space, so a question with three parts carries three
+    of them and the total is the sum.
+    """
+    printed = [int(m) for m in MARKS_PATTERN.findall(body)]
+    if printed:
+        return sum(printed)
+
+    trailing = [
+        int(match.group(1))
+        for line in body.split("\n")
+        if (match := TRAILING_MARKS_PATTERN.search(line.strip()))
+    ]
+    return sum(trailing) or None
+
+
 def _heuristic_questions(question_text: str) -> List[ParsedQuestion]:
     """
-    Fallback parse: walk the document tracking the current session and band,
-    and treat each numbered line as a question.
+    Fallback parse for when the AI is unavailable: walk the document tracking
+    the current session and band, and treat each numbered line as the start of a
+    question, running to the next one.
+
+    This has to cope with two shapes of document. A generated workbook numbers a
+    one-line question per session and prints "[3 marks]". A past paper has no
+    sessions at all, spreads one question over a dozen lines of sub-parts, and
+    marks it "(2)" beside each answer space. Requiring a session heading used to
+    mean a past paper produced no questions whatsoever.
     """
     questions: List[ParsedQuestion] = []
+    body: List[str] = []
     current_session: Optional[str] = None
     current_band: Optional[str] = None
     order = 0
 
+    def close_current() -> None:
+        """Attach everything gathered since the last number to that question."""
+        if not questions or not body:
+            return
+        question = questions[-1]
+        full = "\n".join([question.question_text] + body).strip()
+        question.question_text = full
+        question.marks = _marks_in(full) or 1
+
     for raw_line in question_text.split("\n"):
         line = raw_line.strip()
-        if not line:
+        if not line or PAGE_MARKER_PATTERN.match(line) or PAGE_FOOTER_PATTERN.match(line):
             continue
 
         session_match = SESSION_PATTERN.match(line)
         if session_match:
+            close_current()
+            body = []
             current_session = session_match.group(1).strip()
             current_band = None
             continue
@@ -146,15 +213,26 @@ def _heuristic_questions(question_text: str) -> List[ParsedQuestion]:
                 matched_band = band_name
                 break
         if matched_band:
+            close_current()
+            body = []
             current_band = matched_band
             continue
 
         item_match = NUMBERED_ITEM_PATTERN.match(line)
-        if item_match and current_session:
-            text = item_match.group(2).strip()
+        # A number only opens a question if it continues the run or starts a new
+        # one, so a numbered line inside a question stays part of that question.
+        starts_question = item_match and (
+            not questions
+            or int(item_match.group(1)) == 1
+            or int(item_match.group(1)) == int(questions[-1].number) + 1
+        )
+
+        if starts_question:
+            text = _tidy(item_match.group(2))
             if len(text) < 5:
                 continue
-            marks_match = MARKS_PATTERN.search(text)
+            close_current()
+            body = []
             order += 1
             questions.append(
                 ParsedQuestion(
@@ -164,10 +242,15 @@ def _heuristic_questions(question_text: str) -> List[ParsedQuestion]:
                     session_label=current_session,
                     band=current_band,
                     topic=topic_from_session(current_session),
-                    marks=int(marks_match.group(1)) if marks_match else 1,
+                    marks=_marks_in(text) or 1,
                 )
             )
+        elif questions:
+            tidied = _tidy(line)
+            if tidied:
+                body.append(tidied)
 
+    close_current()
     return questions
 
 
@@ -333,7 +416,8 @@ def _ai_parse(
         f"=== ANSWER KEY ===\n{answer_key_text or '(no answer key supplied)'}"
     )
 
-    response = client.chat.completions.create(
+    response = chat_completion(
+        client,
         model=model,
         messages=[
             {"role": "system", "content": PARSE_SYSTEM_PROMPT},
@@ -438,10 +522,38 @@ def parse_paper(
         question_text=question_text,
         answer_key_text=answer_key_text,
         questions=questions,
+        estimated_minutes=guess_duration(full_text),
         total_marks=sum(q.marks for q in questions) or None,
         parse_status="parsed" if questions else "failed",
         parse_error=None if questions else "Could not identify any questions in the document",
     )
+
+
+def guess_duration(text: str) -> Optional[int]:
+    """
+    How long the paper is meant to take, if it says so.
+
+    Past papers state it in the rubric on the front page ("This examination is
+    60 minutes long"), which is better than guessing from the question count and
+    is what the plan uses to budget an evening.
+    """
+    head = "\n".join(text.split("\n")[:40])
+
+    hours = re.search(r"(\d+)\s*(?:hour|hr)s?(?:\s*(\d+)\s*min)?", head, re.I)
+    if hours:
+        total = int(hours.group(1)) * 60 + int(hours.group(2) or 0)
+        return total if 10 <= total <= 300 else None
+
+    minutes = re.search(
+        r"(?:is|allowed|allowance|time)\D{0,20}?(\d+)\s*minutes?|(\d+)\s*minutes?\s*long",
+        head,
+        re.I,
+    )
+    if minutes:
+        total = int(minutes.group(1) or minutes.group(2))
+        return total if 10 <= total <= 300 else None
+
+    return None
 
 
 def guess_title(text: str) -> Optional[str]:
@@ -450,12 +562,43 @@ def guess_title(text: str) -> Optional[str]:
 
     Workbooks open with a line like "Mathematics — Week 1 Workbook", which is a
     far better library title than the uploaded filename.
+
+    A past paper opens with the name boxes for the candidate to fill in, then the
+    page separator from reading the PDF, so the first few lines have to be
+    skipped before anything worth using as a title appears.
+
+    Its first heading is also often the exam board's, identical across every
+    paper in the series, so which paper this is gets picked up from the lines
+    below it. Without that a shelf of past papers would all be called "Common
+    Entrance Examination at 13+".
     """
-    for raw_line in text.split("\n")[:5]:
+    headings: List[str] = []
+
+    for raw_line in text.split("\n")[:12]:
         line = raw_line.strip()
-        if 4 <= len(line) <= 120 and not line.lower().startswith(("session", "how to use")):
-            return line
-    return None
+        if not (4 <= len(line) <= 120):
+            continue
+        if PAGE_MARKER_PATTERN.match(line):
+            continue
+        # A form field to be written on, not a heading.
+        if DOTTED_LEADER_PATTERN.search(line):
+            continue
+        if line.lower().startswith(("session", "how to use", "please read")):
+            continue
+
+        if not headings:
+            headings.append(line)
+        elif PAPER_IDENTITY_PATTERN.search(line):
+            headings.append(line)
+
+        if len(headings) == 3:
+            break
+
+    if not headings:
+        return None
+
+    title = " — ".join(headings)
+    return title if len(title) <= 120 else headings[0]
 
 
 def new_question_id() -> str:
