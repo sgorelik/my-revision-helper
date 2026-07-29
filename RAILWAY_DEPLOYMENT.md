@@ -46,7 +46,6 @@ Railway should auto-detect your Python app, but verify:
    Click "Variables" tab and add:
    ```
    OPENAI_API_KEY=sk-your-key-here
-   OPENAI_MODEL=gpt-4o-mini
    AI_CONTEXT=You are a helpful and encouraging tutor...
    ```
    
@@ -152,7 +151,8 @@ When you're ready to add PostgreSQL:
 | Variable | Required | Description | Default |
 |----------|----------|-------------|---------|
 | `OPENAI_API_KEY` | Yes (for AI) | Your OpenAI API key | - |
-| `OPENAI_MODEL` | No | Model to use | `gpt-4o-mini` |
+| `OPENAI_MODEL` | No | Override the everyday model | newest available |
+| `OPENAI_PARSING_MODEL` | No | Override the marking/parsing model | newest available |
 | `AI_CONTEXT` | No | General AI instructions | Default tutor context |
 | `ALLOWED_ORIGINS` | No | Comma-separated CORS origins | `localhost:5173,localhost:3000` |
 | `TEMPORAL_TARGET` | No | Temporal server address | `localhost:7233` |

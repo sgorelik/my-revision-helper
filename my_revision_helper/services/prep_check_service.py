@@ -14,6 +14,7 @@ from typing import Any, Optional
 from fastapi import UploadFile
 
 from ..file_processing import process_uploaded_files
+from ..llm import chat_completion
 from ..storage import StorageAdapter
 
 
@@ -201,7 +202,8 @@ Provide your feedback:"""
         {"role": "user", "content": prompt},
     ]
 
-    response = client.chat.completions.create(
+    response = chat_completion(
+        client,
         model=openai_model,
         messages=messages,
         temperature=0.7,

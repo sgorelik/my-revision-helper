@@ -24,7 +24,6 @@ OPENAI_API_KEY=sk-your-actual-openai-key-here
 
 **Optional (but recommended):**
 ```
-OPENAI_MODEL=gpt-4o-mini
 ALLOWED_ORIGINS=*
 ```
 

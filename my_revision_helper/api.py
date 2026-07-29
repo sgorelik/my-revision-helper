@@ -14,7 +14,7 @@ with a persistent database.
 
 Environment Variables:
     OPENAI_API_KEY: API key for OpenAI (optional, enables AI features)
-    OPENAI_MODEL: Model to use (defaults to gpt-4o-mini)
+    OPENAI_MODEL: Override the everyday model (defaults to the newest reachable)
     AI_CONTEXT: General context/instructions for all AI prompts
     TEMPORAL_TARGET: Temporal server address (defaults to localhost:7233)
     TEMPORAL_TASK_QUEUE: Task queue name (defaults to revision-helper-queue)
@@ -43,6 +43,10 @@ from sqlalchemy.orm import Session
 from .workflows import RevisionWorkflow
 from .file_processing import process_uploaded_files
 from .auth import get_current_user_optional
+# Model choice lives in llm.py so there is one place to change it. This module
+# used to carry its own copy, which meant a model set there was quietly ignored
+# here.
+from .llm import chat_completion, get_openai_client, get_openai_model
 from .database import get_db, init_db
 from .deps import get_session_id
 from .storage import StorageAdapter, get_or_create_user
@@ -259,43 +263,6 @@ async def get_temporal_client() -> Client:
     
     target = os.getenv("TEMPORAL_TARGET", "localhost:7233")
     return await Client.connect(target)
-
-
-def get_openai_client() -> Any | None:
-    """Return an OpenAI client if the SDK and API key are available."""
-    if OpenAI is None:
-        logger.warning("OpenAI SDK not installed")
-        return None
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.warning("OPENAI_API_KEY environment variable not set")
-        return None
-    try:
-        logger.info("OpenAI client created successfully")
-        return OpenAI(api_key=api_key)
-    except Exception as e:
-        logger.error(f"Failed to create OpenAI client: {e}", exc_info=True)
-        return None
-
-
-def get_openai_model() -> str:
-    """Get the OpenAI model name from env, with a safe fallback."""
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    # Common valid models - add more as needed
-    valid_models = [
-        "gpt-4o-mini",
-        "gpt-4o",
-        "gpt-4-turbo",
-        "gpt-4",
-        "gpt-3.5-turbo",
-    ]
-    if model not in valid_models:
-        logger.warning(
-            f"Model '{model}' may not be valid. Falling back to 'gpt-4o-mini'. "
-            f"Valid models include: {', '.join(valid_models)}"
-        )
-        return "gpt-4o-mini"
-    return model
 
 
 def get_ai_context() -> str:
@@ -1017,7 +984,8 @@ async def start_run(
             model = get_openai_model()
             # Multiple choice questions need more tokens (question + 4 options + rationale per question)
             max_tokens = desired_count * 200 if question_style == "multiple-choice" else desired_count * 64
-            openai_response = client.chat.completions.create(
+            openai_response = chat_completion(
+                client,
                 model=model,
                 messages=messages,
                 max_tokens=max_tokens,
@@ -1442,7 +1410,8 @@ async def submit_answer(
                 {"role": "user", "content": prompt},
             ]
             
-            openai_response = client.chat.completions.create(
+            openai_response = chat_completion(
+                client,
                 model=model,
                 messages=messages,
                 max_tokens=256,

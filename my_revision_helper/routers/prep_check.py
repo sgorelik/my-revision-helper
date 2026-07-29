@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from ..auth import get_current_user_optional
 from ..database import get_db
 from ..deps import get_session_id
+from ..llm import get_openai_model
 from ..storage import StorageAdapter
 from ..services.prep_check_service import run_prep_check
 from ..ai_context import get_prep_check_context
@@ -60,7 +61,7 @@ async def check_prep(
             session_id=session_id,
             openai_cls=OpenAI,
             openai_api_key=os.getenv("OPENAI_API_KEY") or "",
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_model=get_openai_model(),
             prompt_general_context=get_prep_check_context(),
             fetch_prompt=fetch_prompt,
             render_prompt=render_prompt,

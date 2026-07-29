@@ -47,7 +47,6 @@ Create a `.env` file in the project root:
 OPENAI_API_KEY=sk-your-key-here
 
 # Optional AI configuration
-OPENAI_MODEL=gpt-4o-mini
 AI_CONTEXT=You are a helpful and encouraging tutor...
 
 # Temporal configuration (optional)
@@ -360,9 +359,12 @@ Customize AI behavior via environment variables:
   AI_CONTEXT=You are a math tutor for high school students. Focus on problem-solving techniques...
   ```
 
-- **`OPENAI_MODEL`**: Model to use (default: `gpt-4o-mini`)
+- **`OPENAI_MODEL`** / **`OPENAI_PARSING_MODEL`**: Override the everyday model,
+  and the one used for marking, parsing workbooks and reading handwriting. Both
+  default to the newest model the account can reach, dropping to an older one
+  automatically if it cannot.
   ```env
-  OPENAI_MODEL=gpt-4o
+  OPENAI_PARSING_MODEL=gpt-5.5
   ```
 
 ### Fallback Behavior

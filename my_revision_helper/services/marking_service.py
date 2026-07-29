@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
+from ..llm import chat_completion
 from ..models_db import (
     Marking,
     Paper,
@@ -279,7 +280,8 @@ def _mark_batch(
     else:
         message = user_content
 
-    response = client.chat.completions.create(
+    response = chat_completion(
+        client,
         model=model,
         messages=[
             {"role": "system", "content": MARKING_SYSTEM_PROMPT},
@@ -486,7 +488,8 @@ def mark_holistically(
         f"=== STUDENT'S WORK ===\n{student_work}"
     )
 
-    response = client.chat.completions.create(
+    response = chat_completion(
+        client,
         model=model,
         messages=[
             {"role": "system", "content": HOLISTIC_SYSTEM_PROMPT},

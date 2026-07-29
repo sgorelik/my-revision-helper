@@ -173,8 +173,22 @@ My Revision Helper is an AI-powered educational tool that helps students practic
 - `OPENAI_API_KEY`: Your OpenAI API key
 
 **Optional:**
-- `OPENAI_MODEL`: Model to use (default: `gpt-4o-mini`)
-  - Valid models: `gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo`, `gpt-4`, `gpt-3.5-turbo`
+- `OPENAI_MODEL`: Everyday model — writing questions, short feedback
+  (default: `gpt-5.6-terra`)
+- `OPENAI_PARSING_MODEL`: The heavier jobs — splitting a workbook into
+  questions, marking a paper, reading handwriting (default: `gpt-5.6-sol`)
+
+Both are optional and both take any OpenAI chat model. Rather than a fixed
+allow-list, `llm.py` keeps a preference order and walks down it: if the account
+cannot reach the best model, the next is tried and the unreachable one is not
+asked for again. Setting either variable puts that model at the front of the
+order rather than replacing it, so there is still something to fall back on.
+
+Two things to know when changing model:
+- Models from GPT-5 onwards reject `max_tokens` and refuse any temperature but
+  their default. `llm.chat_completion` translates, so call sites do not care.
+- A model appearing in `/v1/models` does not mean the plan can call it; an
+  uncovered tier fails with `insufficient_quota` only when first used.
 - `AI_CONTEXT`: General instructions for all AI prompts
   - Default: Encouraging tutor persona with fair marking guidelines
 
@@ -229,7 +243,6 @@ My Revision Helper is an AI-powered educational tool that helps students practic
    
    # Set up .env file
    OPENAI_API_KEY=sk-...
-   OPENAI_MODEL=gpt-4o-mini
    AI_CONTEXT=...
    
    # Start Temporal (if using)

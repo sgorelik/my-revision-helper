@@ -27,7 +27,7 @@ Expected: Revision Helper UI
 
 Make sure you've set in Railway Dashboard → Variables:
 - `OPENAI_API_KEY` (required for AI features)
-- `OPENAI_MODEL` (optional, defaults to gpt-4o-mini)
+- `OPENAI_MODEL` / `OPENAI_PARSING_MODEL` (optional; default to the newest models the account can reach)
 - `ALLOWED_ORIGINS` (optional, set to `*` for now)
 
 ## Share Your App

@@ -579,8 +579,14 @@ def _vision_ocr(contents: bytes, client: Any, label: str) -> Optional[str]:
         # (compression converts all formats to JPEG for consistency and size)
         image_format = "image/jpeg"
 
-        response = client.chat.completions.create(
-            model="gpt-4o",  # gpt-4o has vision capabilities
+        # Reading a page of a child's handwriting is one of the harder things
+        # asked of a model here, and a misread digit becomes a lost mark, so
+        # this uses the better model rather than the everyday one.
+        from .llm import chat_completion, get_reasoning_model
+
+        response = chat_completion(
+            client,
+            model=get_reasoning_model(),
             messages=[
                 {"role": "system", "content": OCR_SYSTEM_PROMPT},
                 {

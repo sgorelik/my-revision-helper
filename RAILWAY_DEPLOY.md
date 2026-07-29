@@ -24,7 +24,6 @@ Quick guide to deploy My Revision Helper to Railway.app
      ```
    - Optional variables:
      ```
-     OPENAI_MODEL=gpt-4o-mini
      AI_CONTEXT=You are a helpful and encouraging tutor...
      ALLOWED_ORIGINS=*
      ```
@@ -58,7 +57,6 @@ Quick guide to deploy My Revision Helper to Railway.app
 4. **Set Environment Variables**
    ```bash
    railway variables set OPENAI_API_KEY=sk-your-key-here
-   railway variables set OPENAI_MODEL=gpt-4o-mini
    ```
 
 5. **Deploy**
@@ -115,7 +113,8 @@ Railway will:
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `OPENAI_API_KEY` | Yes | - | OpenAI API key for AI features |
-| `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model to use |
+| `OPENAI_MODEL` | No | newest available | Override the everyday model |
+| `OPENAI_PARSING_MODEL` | No | newest available | Override the model used for marking and parsing |
 | `AI_CONTEXT` | No | (default tutor context) | General AI instructions |
 | `ALLOWED_ORIGINS` | No | `localhost:5173,localhost:3000` | CORS allowed origins |
 | `PORT` | Auto | - | Server port (set by Railway) |

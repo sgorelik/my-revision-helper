@@ -71,9 +71,12 @@ if activity is not None:
         # Optionally enhance with OpenAI if API key is available
         if OpenAI is not None and os.getenv("OPENAI_API_KEY"):
             try:
+                from .llm import chat_completion, get_openai_model
+
                 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
+                response = chat_completion(
+                    client,
+                    model=get_openai_model(),
                     messages=[
                         {
                             "role": "system",
