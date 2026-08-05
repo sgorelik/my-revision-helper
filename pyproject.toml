@@ -22,6 +22,10 @@ dev-dependencies = []
 [tool.pytest.ini_options]
 # Pytest configuration for test discovery and execution
 testpaths = ["."]
+# The MCP server has its own virtualenv, because its SDK needs a newer starlette
+# than the app's FastAPI accepts. Its tests run from there:
+#   mcp_server/.venv/bin/python -m pytest mcp_server/test_mcp_server.py
+norecursedirs = ["mcp_server", ".venv", "node_modules", "frontend", ".git"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

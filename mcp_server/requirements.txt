@@ -1,0 +1,6 @@
+# The MCP server runs in its own virtualenv, deliberately.
+#
+# The SDK pulls in a newer starlette than the app's FastAPI accepts, so sharing
+# an environment with the app breaks the app.
+mcp>=1.29,<2
+requests>=2.31
