@@ -3,6 +3,11 @@ Authentication module with optional Auth0 integration.
 
 Supports both authenticated (via Auth0 JWT) and anonymous users.
 Authentication is optional - endpoints work with or without auth.
+
+There is also a personal access token, for scripts and the MCP server. Auth0
+tokens are issued to a browser and expire within hours, which is no use to
+something running unattended, so a long secret set on the server stands in for
+one named account instead.
 """
 
 from fastapi import Depends, HTTPException, status
@@ -10,6 +15,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from typing import Optional, Dict
 import os
+import secrets
 import requests
 from functools import lru_cache
 import logging
@@ -17,6 +23,50 @@ import logging
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)  # Don't auto-raise on missing token
+
+# Short enough to guess is worse than no token at all, because it looks safe.
+MIN_TOKEN_LENGTH = 32
+
+
+def personal_token_user() -> Optional[Dict[str, str]]:
+    """
+    The account the personal access token stands for, if one is configured.
+
+    Both halves are needed: the secret to present, and the Auth0 user id it
+    acts as. Without the second, a script would land in its own empty world
+    rather than alongside the work done in the browser.
+    """
+    token = os.getenv("API_TOKEN", "").strip()
+    user_id = os.getenv("API_TOKEN_USER_ID", "").strip()
+
+    if not token or not user_id:
+        return None
+
+    if len(token) < MIN_TOKEN_LENGTH:
+        logger.error(
+            f"API_TOKEN is too short to be safe ({len(token)} characters, "
+            f"{MIN_TOKEN_LENGTH} needed) — ignoring it"
+        )
+        return None
+
+    return {"user_id": user_id, "token": token}
+
+
+def _matches_personal_token(presented: str) -> Optional[Dict[str, str]]:
+    """Whether this is the personal access token, compared in constant time."""
+    configured = personal_token_user()
+    if not configured:
+        return None
+
+    if not secrets.compare_digest(presented, configured["token"]):
+        return None
+
+    return {
+        "user_id": configured["user_id"],
+        "email": None,
+        "name": None,
+        "picture": None,
+    }
 
 
 @lru_cache()
@@ -74,6 +124,14 @@ async def get_current_user_optional(
         return None
     
     token = credentials.credentials
+
+    # Checked before Auth0, because it is not a JWT and needs to work on a
+    # deployment where Auth0 is not configured at all.
+    personal = _matches_personal_token(token)
+    if personal:
+        logger.info(f"Request authenticated by personal access token as {personal['user_id']}")
+        return personal
+
     auth0_domain = os.getenv("AUTH0_DOMAIN")
     auth0_audience = os.getenv("AUTH0_AUDIENCE")
     

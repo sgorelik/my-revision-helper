@@ -41,6 +41,13 @@ VITE_AUTH0_AUDIENCE=https://my-revision-helper-api
 AUTH0_DOMAIN=your-tenant.auth0.com
 AUTH0_AUDIENCE=https://my-revision-helper-api
 
+# Personal access token, for the MCP server and any other script. Optional:
+# leave both unset and the mechanism stays off. See mcp_server/README.md.
+# The token must be at least 32 characters; the user id is the "user_id" from
+# /api/user/me while signed in, and is the account the token acts as.
+API_TOKEN=generate-with-python3--c-import-secrets-print-secrets-token_urlsafe-32
+API_TOKEN_USER_ID=auth0|your-user-id
+
 # Already set by Railway automatically:
 # DATABASE_URL (from PostgreSQL service)
 # PORT (set by Railway)
