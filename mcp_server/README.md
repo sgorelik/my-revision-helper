@@ -86,8 +86,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
     "revision-helper": {
       "command": "/Users/stacygorelik/projects/my_revision_helper/mcp_server/.venv/bin/python",
       "args": ["-m", "mcp_server.server"],
-      "cwd": "/Users/stacygorelik/projects/my_revision_helper",
       "env": {
+        "PYTHONPATH": "/Users/stacygorelik/projects/my_revision_helper",
         "REVISION_HELPER_URL": "https://web-production-35acf.up.railway.app",
         "REVISION_HELPER_TOKEN": "<the token from step 1>"
       }
@@ -96,7 +96,27 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 }
 ```
 
-Restart Claude Desktop. For Cursor the same block goes in `.cursor/mcp.json`.
+`PYTHONPATH` rather than `cwd`, because a working directory is not honoured
+everywhere the config is read, and without one of the two the module cannot be
+found.
+
+Restart Claude Desktop — fully quit it, rather than closing the window. For
+Cursor the same block goes in `.cursor/mcp.json`.
+
+### Cowork
+
+The same local server shows up in Cowork sessions. Anthropic's own
+documentation says local servers configured this way are not available there,
+but in practice they are, and installing the same server as a `.mcpb` bundle
+instead is what has the [first-turn
+race](https://github.com/anthropics/claude-code/issues/55903). Either way, a
+full restart of Claude Desktop after any change is what settles it.
+
+If a Cowork session genuinely cannot see the tools, the documented route is a
+custom connector, which is fetched from Anthropic's cloud rather than from this
+machine. That needs the server behind a public HTTPS address — a tunnel back to
+here, since the whole point is reading files off this disk — and the bearer
+token set as a request header in the connector's advanced settings.
 
 ### 6. Check it
 
