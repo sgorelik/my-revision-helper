@@ -55,6 +55,7 @@ from .routers.children import router as children_router
 from .routers.papers import router as papers_router
 from .routers.assignments import router as assignments_router
 from .routers.submissions import router as submissions_router
+from .routers.handins import router as handins_router
 from .routers.progress import router as progress_router
 from .langfuse_client import (
     fetch_prompt,
@@ -1719,6 +1720,7 @@ app.include_router(children_router)
 app.include_router(papers_router)
 app.include_router(assignments_router)
 app.include_router(submissions_router)
+app.include_router(handins_router)
 app.include_router(progress_router)
 
 

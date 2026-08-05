@@ -219,6 +219,21 @@ export interface Marking {
   pageImageIds: string[]
 }
 
+/** The result of handing in work that was never assigned. */
+export interface HandIn {
+  assignmentId: string
+  submissionId: string
+  childId: string
+  subject: string
+  title: string
+  /** Set when the scan gave up a blank paper worth keeping for the other child. */
+  paperId?: string | null
+  savedToLibrary: boolean
+  questionCount: number
+  /** Absent when there was nothing to mark: no scan and no score. */
+  marking?: Marking | null
+}
+
 export interface MarkingListItem {
   id: string
   assignmentId?: string | null

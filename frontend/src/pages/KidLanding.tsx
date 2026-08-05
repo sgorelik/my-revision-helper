@@ -10,6 +10,7 @@ import { Link, useParams } from 'react-router-dom'
 
 import { api } from '../api/client'
 import type { Assignment, ChildProgress, Today } from '../api/types'
+import HandInForm from '../components/HandInForm'
 import {
   Button,
   Card,
@@ -143,6 +144,7 @@ export default function KidLanding() {
   const [today, setToday] = useState<Today | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [handingIn, setHandingIn] = useState(false)
 
   const load = useCallback(async () => {
     if (!childId) return
@@ -245,6 +247,39 @@ export default function KidLanding() {
       </div>
 
       {today && <TodayPanel today={today} />}
+
+      {/* Work done away from the app still counts, and still gets marked. */}
+      <section>
+        {handingIn ? (
+          <>
+            <SectionTitle
+              title="Hand in work from somewhere else"
+              subtitle="Something you did on paper that was not on your list"
+            />
+            <HandInForm
+              childId={child.id}
+              audience="child"
+              onDone={() => {
+                void load()
+              }}
+            />
+            <div className="mt-2 text-center">
+              <Button variant="ghost" size="sm" onClick={() => setHandingIn(false)}>
+                Never mind
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Card className="flex flex-wrap items-center justify-between gap-3 !py-4">
+            <div className="text-sm text-slate-600">
+              Done something on paper that is not on your list? Hand it in and get it marked.
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => setHandingIn(true)}>
+              Hand in other work
+            </Button>
+          </Card>
+        )}
+      </section>
 
       {/* Everything else still outstanding, minus what today already lists. */}
       {laterWork.length > 0 && (

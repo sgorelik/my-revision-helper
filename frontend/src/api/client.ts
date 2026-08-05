@@ -11,6 +11,7 @@ import type {
   Child,
   ChildProgress,
   ChildSubject,
+  HandIn,
   Marking,
   MarkingListItem,
   Paper,
@@ -381,6 +382,36 @@ export const api = {
     if (payload.minutesSpent != null) form.append('minutesSpent', String(payload.minutesSpent))
     payload.files.forEach((file) => form.append('files', file))
     return upload<Marking>(`/assignments/${assignmentId}/submit`, form)
+  },
+
+  // --- Handing in work that was never assigned ------------------------------
+
+  handIn: (payload: {
+    childId: string
+    subject: string
+    title?: string
+    note?: string
+    doneOn?: string
+    minutesSpent?: number
+    pastedText?: string
+    marksAwarded?: number
+    marksAvailable?: number
+    saveToLibrary?: boolean
+    files?: File[]
+  }) => {
+    const form = new FormData()
+    form.append('childId', payload.childId)
+    form.append('subject', payload.subject)
+    form.append('title', payload.title || '')
+    form.append('note', payload.note || '')
+    form.append('doneOn', payload.doneOn || '')
+    form.append('pastedText', payload.pastedText || '')
+    if (payload.minutesSpent != null) form.append('minutesSpent', String(payload.minutesSpent))
+    if (payload.marksAwarded != null) form.append('marksAwarded', String(payload.marksAwarded))
+    if (payload.marksAvailable != null) form.append('marksAvailable', String(payload.marksAvailable))
+    if (payload.saveToLibrary != null) form.append('saveToLibrary', String(payload.saveToLibrary))
+    ;(payload.files || []).forEach((file) => form.append('files', file))
+    return upload<HandIn>('/handins', form)
   },
 
   // --- Marking -------------------------------------------------------------

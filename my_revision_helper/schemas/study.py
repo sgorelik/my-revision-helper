@@ -379,6 +379,26 @@ class MarkingResponse(BaseModel):
     pageImageIds: List[str] = Field(default_factory=list)
 
 
+class HandInResponse(BaseModel):
+    """
+    The result of handing in work that was never assigned.
+
+    Carries a marking only when there was something to mark: work recorded with
+    no scan and no score is a note that it happened, nothing more.
+    """
+
+    assignmentId: str
+    submissionId: str
+    childId: str
+    subject: str
+    title: str
+    # Set when the scan gave up a blank paper worth keeping for the other child.
+    paperId: Optional[str] = None
+    savedToLibrary: bool = False
+    questionCount: int = 0
+    marking: Optional[MarkingResponse] = None
+
+
 class MarkingListItem(BaseModel):
     id: str
     assignmentId: Optional[str] = None

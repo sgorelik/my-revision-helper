@@ -24,6 +24,7 @@ import {
 
 import { api } from '../api/client'
 import type { ChildProgress, TopicMastery } from '../api/types'
+import HandInForm from '../components/HandInForm'
 import {
   Button,
   Card,
@@ -273,6 +274,7 @@ export default function DashboardPage() {
   const [progress, setProgress] = useState<ChildProgress | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [handingIn, setHandingIn] = useState(false)
 
   const load = useCallback(async () => {
     if (!childId) return
@@ -315,10 +317,34 @@ export default function DashboardPage() {
             {child.yearGroup && <p className="text-sm text-slate-500">{child.yearGroup}</p>}
           </div>
         </div>
-        <Link to={`/kid/${child.id}`}>
-          <Button variant="secondary">View as {child.name}</Button>
-        </Link>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => setHandingIn((open) => !open)}
+            title="Work done off the plan — on paper, or set in class"
+          >
+            {handingIn ? 'Close' : 'Record other work'}
+          </Button>
+          <Link to={`/kid/${child.id}`}>
+            <Button variant="secondary">View as {child.name}</Button>
+          </Link>
+        </div>
       </div>
+
+      {handingIn && (
+        <section>
+          <SectionTitle
+            title="Record work that was never assigned"
+            subtitle="A worksheet done on paper, or an exercise set in class"
+          />
+          <HandInForm
+            childId={child.id}
+            onDone={() => {
+              void load()
+            }}
+          />
+        </section>
+      )}
 
       {/* Headline numbers */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
