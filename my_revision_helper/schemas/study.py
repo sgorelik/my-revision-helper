@@ -369,6 +369,11 @@ class MarkingResponse(BaseModel):
     weakTopics: List[str] = Field(default_factory=list)
     markedBy: str = "ai"
     markedAt: Optional[str] = None
+    # needs_review when the app could not produce a score it can stand behind.
+    # Such work has no percentage and stays out of the average until a person
+    # supplies one, rather than counting as nought.
+    status: str = "marked"
+    reviewReason: Optional[str] = None
     questionMarks: List[QuestionMarkResponse] = Field(default_factory=list)
     # How the sitting went, when it was timed rather than self-reported.
     minutesSpent: Optional[int] = None
@@ -399,6 +404,57 @@ class HandInResponse(BaseModel):
     marking: Optional[MarkingResponse] = None
 
 
+class WorkItem(BaseModel):
+    """
+    One piece of work on a child's record, as something that can be corrected.
+
+    Keyed by the assignment, because that is what a parent means by "this
+    paper": the completion and its mark come and go with it.
+    """
+
+    id: str  # The assignment id
+    markingId: Optional[str] = None
+    submissionId: Optional[str] = None
+    childId: str
+    title: str
+    subject: str
+    doneOn: Optional[str] = None
+    marksAwarded: Optional[float] = None
+    marksAvailable: Optional[float] = None
+    percentage: Optional[float] = None
+    # marked, needs_review, or unmarked when nothing was ever scored
+    status: str = "marked"
+    reviewReason: Optional[str] = None
+    markedBy: Optional[str] = None
+    minutesSpent: Optional[int] = None
+    note: Optional[str] = None
+    weakTopics: List[str] = Field(default_factory=list)
+    deletedAt: Optional[str] = None
+
+
+class WorkListResponse(BaseModel):
+    items: List[WorkItem]
+    total: int
+
+
+class WorkUpdateRequest(BaseModel):
+    """A correction to a piece of work. Everything is optional."""
+
+    marksAwarded: Optional[float] = None
+    marksAvailable: Optional[float] = None
+    title: Optional[str] = None
+    subject: Optional[str] = None
+    doneOn: Optional[str] = None  # ISO date
+    note: Optional[str] = None
+    minutesSpent: Optional[int] = None
+
+
+class WorkMoveRequest(BaseModel):
+    """Reassign a piece of work that was logged against the wrong child."""
+
+    toChildId: str
+
+
 class MarkingListItem(BaseModel):
     id: str
     assignmentId: Optional[str] = None
@@ -409,6 +465,8 @@ class MarkingListItem(BaseModel):
     marksAvailable: Optional[float] = None
     weakTopics: List[str] = Field(default_factory=list)
     markedAt: Optional[str] = None
+    status: str = "marked"  # marked, or needs_review while it waits for a person
+    reviewReason: Optional[str] = None
 
 
 class MarkingListResponse(BaseModel):
@@ -482,6 +540,9 @@ class ChildProgressResponse(BaseModel):
     weeklyMinutesTarget: int = 0
     averagePercentage: Optional[float] = None
     streakDays: int = 0
+    # Work that could not be marked and is waiting for someone to score it. Not
+    # in the average, so it needs saying separately or it would go unnoticed.
+    needsReviewCount: int = 0
 
 
 class RetestRequest(BaseModel):

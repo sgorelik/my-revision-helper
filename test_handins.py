@@ -236,6 +236,60 @@ class TestWorkThatWasNeverScanned:
 
 
 @pytest.mark.integration
+class TestAScanTheAppCannotRead:
+    """
+    An empty file stands in for a photo too blurred to transcribe. Whatever the
+    cause, the child did the work, and the app must not decide they scored
+    nothing just because it could not see the answers.
+    """
+
+    def _blurred(self, client, child):
+        response = _hand_in(
+            client,
+            child,
+            title="Blurred photo",
+            minutesSpent=30,
+            files=[("files", ("blurred.txt", "   \n  \n", "text/plain"))],
+        )
+        assert response.status_code == 201, response.text
+        return response
+
+    def test_it_is_still_recorded_rather_than_refused(self, client, child):
+        response = self._blurred(client, child)
+
+        assert response.status_code == 201
+        assert response.json()["assignmentId"]
+
+    def test_it_carries_no_score(self, client, child):
+        marking = self._blurred(client, child).json()["marking"]
+
+        assert marking["status"] == "needs_review"
+        assert marking["percentage"] is None
+        assert marking["marksAwarded"] is None
+
+    def test_it_says_what_to_do_about_it(self, client, child):
+        marking = self._blurred(client, child).json()["marking"]
+
+        assert "Enter the mark yourself" in marking["reviewReason"]
+
+    def test_it_does_not_drag_the_average_down(self, client, child):
+        _hand_in(client, child, title="A real paper", marksAwarded=18, marksAvailable=20)
+        self._blurred(client, child)
+
+        progress = client.get(f"/api/children/{child}/progress").json()
+        assert progress["averagePercentage"] == 90.0
+        assert progress["needsReviewCount"] == 1
+
+    def test_the_time_spent_still_counts(self, client, child):
+        before = client.get(f"/api/children/{child}/progress").json()["minutesLoggedThisWeek"]
+
+        self._blurred(client, child)
+
+        after = client.get(f"/api/children/{child}/progress").json()["minutesLoggedThisWeek"]
+        assert after == before + 30
+
+
+@pytest.mark.integration
 class TestAScanThatCarriesItsOwnQuestions:
     """
     The scan has the questions printed on it and the answers written in, so it can

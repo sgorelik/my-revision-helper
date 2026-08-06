@@ -22,6 +22,8 @@ import type {
   Today,
   TopicMastery,
   WeekDay,
+  WorkItem,
+  WorkUpdate,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api'
@@ -217,6 +219,23 @@ export const api = {
     childId: string,
     payload: { subject: string; label: string; scorePct: number; yearAveragePct?: number },
   ) => send<ScoreLogItem>('POST', `/children/${childId}/score-log`, payload),
+
+  // --- Correcting the record -----------------------------------------------
+
+  listWork: (childId: string, options?: { needsReviewOnly?: boolean }) =>
+    get<{ items: WorkItem[]; total: number }>(
+      `/work?childId=${childId}${options?.needsReviewOnly ? '&needsReviewOnly=true' : ''}`,
+    ).then((r) => r.items),
+
+  updateWork: (workId: string, payload: WorkUpdate) =>
+    send<WorkItem>('PATCH', `/work/${workId}`, payload),
+
+  deleteWork: (workId: string) => send<WorkItem>('DELETE', `/work/${workId}`),
+
+  restoreWork: (workId: string) => send<WorkItem>('POST', `/work/${workId}/restore`, {}),
+
+  moveWork: (workId: string, toChildId: string) =>
+    send<WorkItem>('POST', `/work/${workId}/move`, { toChildId }),
 
   createRetest: (
     childId: string,

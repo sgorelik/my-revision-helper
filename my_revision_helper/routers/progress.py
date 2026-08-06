@@ -55,6 +55,7 @@ from ..schemas.study import (
 )
 from ..services.marking_service import WEAK_TOPIC_THRESHOLD
 from ..services.scope import build_scope, ensure_user_row, get_owned_child
+from ..services.work import NEEDS_REVIEW, counts_towards_average
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ def _streak_days(db: Session, child_id: str) -> int:
     """
     submissions = (
         db.query(Submission.submitted_at)
-        .filter(Submission.child_id == child_id)
+        .filter(Submission.child_id == child_id, Submission.deleted_at.is_(None))
         .order_by(Submission.submitted_at.desc())
         .all()
     )
@@ -148,10 +149,16 @@ async def get_child_progress(
         blocks = db.query(PlanBlock).filter(PlanBlock.plan_id == plan.id).all()
         plan_response = _plan_response(plan, blocks)
 
-    assignments = db.query(Assignment).filter(Assignment.child_id == child_id).all()
+    # Work taken off the record is out of every figure below, which is the whole
+    # point of taking it off.
+    assignments = (
+        db.query(Assignment)
+        .filter(Assignment.child_id == child_id, Assignment.deleted_at.is_(None))
+        .all()
+    )
     markings = (
         db.query(Marking)
-        .filter(Marking.child_id == child_id)
+        .filter(Marking.child_id == child_id, Marking.deleted_at.is_(None))
         .order_by(Marking.marked_at.desc())
         .all()
     )
@@ -163,7 +170,7 @@ async def get_child_progress(
     )
     score_entries = (
         db.query(ScoreLogEntry)
-        .filter(ScoreLogEntry.child_id == child_id)
+        .filter(ScoreLogEntry.child_id == child_id, ScoreLogEntry.deleted_at.is_(None))
         .order_by(ScoreLogEntry.recorded_at.asc())
         .all()
     )
@@ -184,6 +191,7 @@ async def get_child_progress(
         db.query(Submission)
         .filter(
             Submission.child_id == child_id,
+            Submission.deleted_at.is_(None),
             Submission.submitted_at >= utc_week_start,
             Submission.submitted_at < utc_week_end,
         )
@@ -201,7 +209,11 @@ async def get_child_progress(
     for submission, assignment in (
         db.query(Submission, Assignment)
         .join(Assignment, Submission.assignment_id == Assignment.id)
-        .filter(Submission.child_id == child_id)
+        .filter(
+            Submission.child_id == child_id,
+            Submission.deleted_at.is_(None),
+            Assignment.deleted_at.is_(None),
+        )
         .all()
     ):
         if submission.minutes_spent:
@@ -267,7 +279,11 @@ async def get_child_progress(
     today = local_today()
     overdue = [a for a in outstanding if a.due_date and a.due_date.date() < today]
 
-    percentages = [m.percentage for m in markings if m.percentage is not None]
+    # Work the marker could not read is not work the child failed, so it waits
+    # for a person rather than being averaged in as a zero.
+    countable = [m for m in markings if counts_towards_average(m)]
+    percentages = [m.percentage for m in countable]
+    needing_review = [m for m in markings if m.status == NEEDS_REVIEW]
 
     return ChildProgressResponse(
         child=_child_response(child),
@@ -298,9 +314,12 @@ async def get_child_progress(
                 marksAvailable=m.marks_available,
                 weakTopics=m.weak_topics or [],
                 markedAt=m.marked_at.isoformat() if m.marked_at else None,
+                status=m.status or "marked",
+                reviewReason=m.review_reason,
             )
             for m in markings[:5]
         ],
+        needsReviewCount=len(needing_review),
         assignmentsTotal=len(assignments),
         assignmentsDone=len(completed),
         assignmentsDueThisWeek=len(due_this_week),
@@ -364,7 +383,9 @@ async def get_score_log(
     if not get_owned_child(db, child_id, build_scope(user, session_id)):
         raise HTTPException(status_code=404, detail="Child not found")
 
-    query = db.query(ScoreLogEntry).filter(ScoreLogEntry.child_id == child_id)
+    query = db.query(ScoreLogEntry).filter(
+        ScoreLogEntry.child_id == child_id, ScoreLogEntry.deleted_at.is_(None)
+    )
     if subject:
         query = query.filter(ScoreLogEntry.subject == subject)
 
@@ -604,7 +625,9 @@ async def get_today(
 
     outstanding = [
         a
-        for a in db.query(Assignment).filter(Assignment.child_id == child_id).all()
+        for a in db.query(Assignment)
+        .filter(Assignment.child_id == child_id, Assignment.deleted_at.is_(None))
+        .all()
         if a.status not in FINISHED_STATUSES
     ]
 
@@ -702,6 +725,7 @@ async def get_week_view(
         db.query(Assignment)
         .filter(
             Assignment.child_id == child_id,
+            Assignment.deleted_at.is_(None),
             or_(
                 and_(Assignment.scheduled_date >= week_start, Assignment.scheduled_date < week_end),
                 and_(

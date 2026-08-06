@@ -195,6 +195,36 @@ CHILDREN = [
     {"id": "child-2", "name": "Savva", "yearGroup": "Year 8"},
 ]
 
+WORK = [
+    {
+        "id": "work-1",
+        "markingId": "marking-1",
+        "childId": "child-1",
+        "title": "Fractions worksheet",
+        "subject": "Mathematics",
+        "doneOn": "2026-07-14T00:00:00",
+        "marksAwarded": 21,
+        "marksAvailable": 50,
+        "percentage": 42.0,
+        "status": "marked",
+        "weakTopics": [],
+    },
+    {
+        "id": "work-2",
+        "markingId": "marking-2",
+        "childId": "child-1",
+        "title": "Comprehension scan",
+        "subject": "English",
+        "doneOn": "2026-07-15T00:00:00",
+        "marksAwarded": None,
+        "marksAvailable": 40,
+        "percentage": None,
+        "status": "needs_review",
+        "reviewReason": "The writing on this upload could not be read.",
+        "weakTopics": [],
+    },
+]
+
 
 class StubApi:
     """Stands in for the deployed app."""
@@ -250,6 +280,34 @@ class StubApi:
     def assign(self, **kwargs):
         self.calls.append(("assign", kwargs))
         return {}
+
+    def work(self, child_id, needs_review_only=False):
+        self.calls.append(("work", child_id, needs_review_only))
+        items = self.responses.get("work", WORK)
+        if needs_review_only:
+            return [i for i in items if i.get("status") == "needs_review"]
+        return items
+
+    def update_work(self, work_id, **fields):
+        self.calls.append(("update_work", work_id, fields))
+        base = next((i for i in self.responses.get("work", WORK) if i["id"] == work_id), WORK[0])
+        return {**base, **{k: v for k, v in fields.items() if v not in (None, "")}}
+
+    def delete_work(self, work_id):
+        self.calls.append(("delete_work", work_id))
+        return {}
+
+    def restore_work(self, work_id):
+        self.calls.append(("restore_work", work_id))
+        return next((i for i in self.responses.get("work", WORK) if i["id"] == work_id), WORK[0])
+
+    def move_work(self, work_id, to_child_id):
+        self.calls.append(("move_work", work_id, to_child_id))
+        return {}
+
+    def update_child(self, child_id, **fields):
+        self.calls.append(("update_child", child_id, fields))
+        return {"id": child_id, "name": fields.get("name") or "Yuri", **fields}
 
 
 @pytest.fixture
@@ -554,3 +612,411 @@ class TestReadingProgress:
 
         assert "1 day" in get_progress("Yuri")
         assert "1 days" not in get_progress("Yuri")
+
+    def test_work_waiting_for_a_mark_is_called_out(self, stub):
+        """It is outside the average, so it has to be said or it is invisible."""
+        from mcp_server.server import get_progress
+
+        stub(StubApi(progress={"averagePercentage": 80.0, "needsReviewCount": 3}))
+        out = get_progress("Yuri")
+
+        assert "Awaiting a mark: 3" in out
+        assert "not in the average" in out
+
+
+class TestListingWorkThatCanBeCorrected:
+    def test_each_entry_carries_the_id_needed_to_change_it(self, stub):
+        from mcp_server.server import list_work
+
+        stub(StubApi())
+        out = list_work("Yuri")
+
+        assert "Fractions worksheet" in out
+        assert "work-1" in out
+
+    def test_a_mark_is_shown_as_a_percentage_and_out_of(self, stub):
+        from mcp_server.server import list_work
+
+        stub(StubApi())
+        out = list_work("Yuri")
+
+        assert "42% (21/50)" in out
+
+    def test_work_waiting_for_a_mark_says_why(self, stub):
+        from mcp_server.server import list_work
+
+        stub(StubApi())
+        out = list_work("Yuri", needs_review_only=True)
+
+        assert "Comprehension scan" in out
+        assert "could not be read" in out
+        assert "Fractions worksheet" not in out
+
+    def test_an_empty_record_says_so_plainly(self, stub):
+        from mcp_server.server import list_work
+
+        stub(StubApi(work=[]))
+
+        assert "no recorded work" in list_work("Yuri")
+
+
+class TestCorrectingAMark:
+    def test_the_work_can_be_named_rather_than_identified(self, stub):
+        from mcp_server.server import update_work
+
+        api = stub(StubApi())
+        update_work("Yuri", "fractions", marks_awarded=41)
+
+        call = next(c for c in api.calls if c[0] == "update_work")
+        assert call[1] == "work-1"
+        assert call[2]["marksAwarded"] == 41
+
+    def test_the_new_mark_is_read_back(self, stub):
+        from mcp_server.server import update_work
+
+        stub(StubApi())
+        out = update_work("Yuri", "work-1", marks_awarded=41, marks_available=50)
+
+        assert "Updated" in out
+        assert "Fractions worksheet" in out
+
+    def test_an_ambiguous_title_asks_rather_than_guesses(self, stub):
+        from mcp_server.server import update_work
+
+        stub(
+            StubApi(
+                work=[
+                    {**WORK[0], "id": "a", "title": "Maths paper 1"},
+                    {**WORK[0], "id": "b", "title": "Maths paper 2"},
+                ]
+            )
+        )
+        out = update_work("Yuri", "Maths paper", marks_awarded=10)
+
+        assert "More than one" in out
+
+    def test_a_title_nobody_recognises_says_where_to_look(self, stub):
+        from mcp_server.server import update_work
+
+        stub(StubApi())
+        out = update_work("Yuri", "Geography fieldwork", marks_awarded=10)
+
+        assert "list_work" in out
+
+
+class TestRemovingAndRestoringWork:
+    def test_removing_it_says_how_to_undo(self, stub):
+        from mcp_server.server import delete_work
+
+        api = stub(StubApi())
+        out = delete_work("Yuri", "fractions")
+
+        assert ("delete_work", "work-1") in api.calls
+        assert "restore_work" in out
+        assert "work-1" in out
+
+    def test_putting_it_back_reads_it_out(self, stub):
+        from mcp_server.server import restore_work
+
+        api = stub(StubApi())
+        out = restore_work("Yuri", "work-1")
+
+        assert ("restore_work", "work-1") in api.calls
+        assert "Fractions worksheet" in out
+
+
+class TestMovingWorkBetweenChildren:
+    def test_it_goes_to_the_named_child(self, stub):
+        from mcp_server.server import move_work
+
+        api = stub(StubApi())
+        out = move_work("fractions", "Yuri", "Savva")
+
+        assert ("move_work", "work-1", "child-2") in api.calls
+        assert "Savva" in out
+
+    def test_an_unknown_destination_is_refused(self, stub):
+        from mcp_server.server import move_work
+
+        stub(StubApi())
+        out = move_work("fractions", "Yuri", "Boris")
+
+        assert "Failed" in out
+        assert "Boris" in out
+
+
+class TestRecordingAWeekAtOnce:
+    def test_every_row_goes_in(self, stub):
+        from mcp_server.server import record_results
+
+        api = stub(StubApi())
+        out = record_results(
+            [
+                {"title": "Calc paper", "subject": "Maths", "marks_awarded": 41, "marks_available": 50},
+                {"title": "Comprehension", "subject": "English", "marks_awarded": 18, "marks_available": 20},
+            ],
+            child="Yuri",
+        )
+
+        assert len([c for c in api.calls if c[0] == "handin"]) == 2
+        assert "Recorded 2" in out
+
+    def test_the_roster_is_fetched_once_not_once_per_row(self, stub):
+        """Twenty rows should not mean twenty round trips to look up the same child."""
+        from mcp_server.server import record_results
+
+        api = stub(StubApi())
+        api.children = lambda: (api.calls.append(("children",)) or CHILDREN)
+
+        record_results(
+            [{"title": f"Paper {i}", "subject": "Maths", "minutes_spent": 20} for i in range(6)],
+            child="Yuri",
+        )
+
+        assert len([c for c in api.calls if c[0] == "children"]) == 1
+
+    def test_one_call_can_cover_both_children(self, stub):
+        from mcp_server.server import record_results
+
+        api = stub(StubApi())
+        record_results(
+            [
+                {"title": "Maths", "subject": "Maths", "minutes_spent": 30, "child": "Yuri"},
+                {"title": "Chemistry", "subject": "Chemistry", "minutes_spent": 30, "child": "Savva"},
+            ]
+        )
+
+        whose = [c[1]["child_id"] for c in api.calls if c[0] == "handin"]
+        assert whose == ["child-1", "child-2"]
+
+    def test_a_bad_row_does_not_take_the_good_ones_with_it(self, stub):
+        from mcp_server.server import record_results
+
+        api = stub(StubApi())
+        out = record_results(
+            [
+                {"title": "Good one", "subject": "Maths", "minutes_spent": 30},
+                {"subject": "Maths", "minutes_spent": 30},  # no title
+                {"title": "Also good", "subject": "Maths", "minutes_spent": 30},
+            ],
+            child="Yuri",
+        )
+
+        assert len([c for c in api.calls if c[0] == "handin"]) == 2
+        assert "no title" in out
+        assert "2 of 3 went through" in out
+
+    def test_a_score_without_a_total_is_refused(self, stub):
+        from mcp_server.server import record_results
+
+        api = stub(StubApi())
+        out = record_results(
+            [{"title": "Paper", "subject": "Maths", "marks_awarded": 41}], child="Yuri"
+        )
+
+        assert not [c for c in api.calls if c[0] == "handin"]
+        assert "out of" in out
+
+    def test_a_row_with_nothing_to_record_is_refused(self, stub):
+        from mcp_server.server import record_results
+
+        stub(StubApi())
+        out = record_results([{"title": "Paper", "subject": "Maths"}], child="Yuri")
+
+        assert "nothing to record" in out
+
+    def test_words_where_a_number_belongs_are_refused(self, stub):
+        from mcp_server.server import record_results
+
+        stub(StubApi())
+        out = record_results(
+            [{"title": "Paper", "subject": "Maths", "marks_awarded": "most of it", "marks_available": 50}],
+            child="Yuri",
+        )
+
+        assert "should be a number" in out
+
+    def test_the_dates_and_notes_carry_through(self, stub):
+        from mcp_server.server import record_results
+
+        api = stub(StubApi())
+        record_results(
+            [
+                {
+                    "title": "Paper",
+                    "subject": "Maths",
+                    "marks_awarded": 8,
+                    "marks_available": 10,
+                    "done_on": "2026-08-03",
+                    "minutes_spent": 45,
+                    "note": "Rushed the end",
+                }
+            ],
+            child="Yuri",
+        )
+
+        sent = next(c[1] for c in api.calls if c[0] == "handin")
+        assert sent["done_on"] == "2026-08-03"
+        assert sent["minutes_spent"] == 45
+        assert sent["note"] == "Rushed the end"
+
+    def test_it_does_not_fill_the_library_with_paperwork(self, stub):
+        """These are records of work done, not papers for the other child."""
+        from mcp_server.server import record_results
+
+        api = stub(StubApi())
+        record_results([{"title": "Paper", "subject": "Maths", "minutes_spent": 20}], child="Yuri")
+
+        assert next(c[1] for c in api.calls if c[0] == "handin")["save_to_library"] is False
+
+    def test_an_oversized_batch_is_turned_away_rather_than_half_done(self, stub):
+        from mcp_server.server import record_results
+
+        api = stub(StubApi())
+        out = record_results(
+            [{"title": f"P{i}", "subject": "Maths", "minutes_spent": 10} for i in range(60)],
+            child="Yuri",
+        )
+
+        assert not [c for c in api.calls if c[0] == "handin"]
+        assert "batches" in out
+
+    def test_an_empty_batch_says_so(self, stub):
+        from mcp_server.server import record_results
+
+        stub(StubApi())
+        assert "Nothing to record" in record_results([])
+
+
+class TestCorrectingSeveralMarksAtOnce:
+    def test_each_named_paper_is_updated(self, stub):
+        from mcp_server.server import correct_marks
+
+        api = stub(StubApi())
+        out = correct_marks(
+            [
+                {"work": "fractions", "marks_awarded": 41, "marks_available": 50},
+                {"work": "Comprehension scan", "marks_awarded": 33, "marks_available": 40},
+            ],
+            child="Yuri",
+        )
+
+        updates = [c for c in api.calls if c[0] == "update_work"]
+        assert [c[1] for c in updates] == ["work-1", "work-2"]
+        assert "Corrected 2" in out
+
+    def test_the_record_is_fetched_once_per_child(self, stub):
+        from mcp_server.server import correct_marks
+
+        api = stub(StubApi())
+        correct_marks(
+            [
+                {"work": "fractions", "marks_awarded": 41, "marks_available": 50},
+                {"work": "Comprehension", "marks_awarded": 33, "marks_available": 40},
+            ],
+            child="Yuri",
+        )
+
+        assert len([c for c in api.calls if c[0] == "work"]) == 1
+
+    def test_work_nobody_can_find_is_reported_and_skipped(self, stub):
+        from mcp_server.server import correct_marks
+
+        api = stub(StubApi())
+        out = correct_marks(
+            [
+                {"work": "fractions", "marks_awarded": 41, "marks_available": 50},
+                {"work": "Geography fieldwork", "marks_awarded": 10, "marks_available": 20},
+            ],
+            child="Yuri",
+        )
+
+        assert len([c for c in api.calls if c[0] == "update_work"]) == 1
+        assert "Geography fieldwork" in out
+        assert "1 of 2 went through" in out
+
+    def test_renaming_uses_new_title_so_work_still_finds_it(self, stub):
+        from mcp_server.server import correct_marks
+
+        api = stub(StubApi())
+        correct_marks(
+            [{"work": "fractions", "new_title": "Week 3 arithmetic"}], child="Yuri"
+        )
+
+        sent = next(c[2] for c in api.calls if c[0] == "update_work")
+        assert sent["title"] == "Week 3 arithmetic"
+
+    def test_a_row_that_says_nothing_about_which_work_is_refused(self, stub):
+        from mcp_server.server import correct_marks
+
+        stub(StubApi())
+        out = correct_marks([{"marks_awarded": 10}], child="Yuri")
+
+        assert "say which piece of work" in out
+
+    def test_an_empty_batch_says_so(self, stub):
+        from mcp_server.server import correct_marks
+
+        stub(StubApi())
+        assert "Nothing to correct" in correct_marks([])
+
+
+class TestSeeingWhatIsWaitingForAMark:
+    def test_it_looks_across_every_child(self, stub):
+        from mcp_server.server import work_needing_marks
+
+        api = stub(StubApi())
+        out = work_needing_marks()
+
+        assert len([c for c in api.calls if c[0] == "work"]) == len(CHILDREN)
+        assert "Comprehension scan" in out
+        assert "could not be read" in out
+
+    def test_scored_work_is_left_out_of_it(self, stub):
+        from mcp_server.server import work_needing_marks
+
+        stub(StubApi())
+
+        assert "Fractions worksheet" not in work_needing_marks()
+
+    def test_a_clean_slate_says_so_plainly(self, stub):
+        from mcp_server.server import work_needing_marks
+
+        stub(StubApi(work=[WORK[0]]))
+
+        assert "Nothing is waiting" in work_needing_marks()
+
+    def test_it_points_at_the_tool_that_fixes_them(self, stub):
+        from mcp_server.server import work_needing_marks
+
+        stub(StubApi())
+
+        assert "correct_marks" in work_needing_marks()
+
+
+class TestRenamingAChild:
+    def test_it_reaches_the_right_child(self, stub):
+        from mcp_server.server import rename_child
+
+        api = stub(StubApi())
+        out = rename_child("Yuri", name="Yuri Gorelik")
+
+        call = next(c for c in api.calls if c[0] == "update_child")
+        assert call[1] == "child-1"
+        assert call[2]["name"] == "Yuri Gorelik"
+        assert "Yuri Gorelik" in out
+
+    def test_fields_that_were_not_mentioned_are_not_sent(self, monkeypatch):
+        """Renaming must not wipe the year group nobody asked to change."""
+        sent = {}
+
+        def fake_request(method, url, **kwargs):
+            sent.update(kwargs.get("json") or {})
+            return FakeResponse(200, {"id": "child-1", "name": "Yuri"})
+
+        monkeypatch.setattr("mcp_server.api.requests.request", fake_request)
+        RevisionHelper(base_url="https://example.test", token="t").update_child(
+            "child-1", name="", yearGroup="Year 11", avatarEmoji=None
+        )
+
+        assert sent == {"yearGroup": "Year 11"}

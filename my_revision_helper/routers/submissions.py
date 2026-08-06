@@ -31,6 +31,7 @@ from ..schemas.study import (
     QuestionMarkResponse,
 )
 from ..services import timing
+from ..services import work as work_service
 from ..services.file_store import FileTooLargeError, get_file, store_uploads
 from ..services.page_images import load_page_images, store_page_images
 from ..services.marking_service import (
@@ -80,6 +81,8 @@ def _marking_response(db: Session, marking: Marking) -> MarkingResponse:
         weakTopics=marking.weak_topics or [],
         markedBy=marking.marked_by or "ai",
         markedAt=marking.marked_at.isoformat() if marking.marked_at else None,
+        status=marking.status or "marked",
+        reviewReason=marking.review_reason,
         minutesSpent=submission.minutes_spent if submission else None,
         timed=bool(submission.timed) if submission else False,
         pauseCount=int(submission.pause_count or 0) if submission else 0,
@@ -138,12 +141,9 @@ async def submit_assignment(
             status_code=400, detail="Upload a photo of your work or type your answers"
         )
 
+    # Without a model the work is still kept and still counts as handed in; it
+    # waits for a mark rather than being refused with the scan in hand.
     openai_client = get_openai_client()
-    if not openai_client:
-        raise HTTPException(
-            status_code=503,
-            detail="Marking is unavailable because OPENAI_API_KEY is not configured.",
-        )
 
     try:
         file_ids, file_contents = await store_uploads(
@@ -167,11 +167,7 @@ async def submit_assignment(
         text_parts.append(f"--- {filename} ---\n{text}")
 
     student_work = "\n\n".join(text_parts).strip()
-    if not student_work:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not read any work from the upload. Try a clearer photo, or type your answers.",
-        )
+    unreadable = not student_work
 
     # Handing in ends the sitting, whether or not "finish" was pressed.
     if assignment.timer_state in (timing.RUNNING, timing.PAUSED):
@@ -204,43 +200,69 @@ async def submit_assignment(
     child = db.query(Child).filter(Child.id == assignment.child_id).first()
     model = get_reasoning_model()
 
-    try:
-        if questions:
-            result = mark_per_question(
-                questions,
-                student_work,
-                subject=assignment.subject,
-                client=openai_client,
-                model=model,
-                # So a question answered by drawing is marked from the drawing.
-                pages=load_page_images(db, page_image_ids),
-            )
+    # Anything that stops the marker producing a score it can stand behind. The
+    # work is still recorded as done either way; what changes is whether it
+    # carries a percentage. A paper the app could not read is not a paper the
+    # child scored nothing on, and recording it as zero was both wrong and hard
+    # to undo.
+    reason: Optional[str] = None
+    result = None
+
+    if not openai_client:
+        reason = "Marking is switched off on this server. Enter the mark yourself."
+    elif unreadable:
+        reason = (
+            "The writing on this upload could not be read. "
+            "Enter the mark yourself, or try a clearer photo."
+        )
+    else:
+        try:
+            if questions:
+                result = mark_per_question(
+                    questions,
+                    student_work,
+                    subject=assignment.subject,
+                    client=openai_client,
+                    model=model,
+                    # So a question answered by drawing is marked from the drawing.
+                    pages=load_page_images(db, page_image_ids),
+                )
+            else:
+                result = mark_holistically(
+                    student_work,
+                    subject=assignment.subject,
+                    year_group=child.year_group if child else None,
+                    client=openai_client,
+                    model=model,
+                )
+        except Exception as e:
+            logger.error(f"Marking failed for submission {submission.id}: {e}", exc_info=True)
+            reason = f"Marking could not be completed: {e}"
         else:
-            result = mark_holistically(
-                student_work,
-                subject=assignment.subject,
-                year_group=child.year_group if child else None,
-                client=openai_client,
-                model=model,
-            )
-    except Exception as e:
-        submission.status = "failed"
-        # Back to where they were, not to untouched: the work was in fact done,
-        # and a timed sitting should not look as though it never happened.
-        assignment.status = "in_progress" if assignment.timer_first_started_at else "todo"
-        db.commit()
-        logger.error(f"Marking failed for submission {submission.id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Marking failed: {e}")
+            reason = work_service.unbelievable(result)
 
-    marking = persist_marking(
-        db,
-        submission=submission,
-        subject=assignment.subject,
-        paper_id=assignment.paper_id,
-        result=result,
-    )
+    if reason:
+        marking = work_service.record_unmarked(
+            db,
+            submission=submission,
+            subject=assignment.subject,
+            paper_id=assignment.paper_id,
+            reason=reason,
+            result=result,
+        )
+        submission.status = "marked"
+        assignment.status = "done"
+    else:
+        marking = persist_marking(
+            db,
+            submission=submission,
+            subject=assignment.subject,
+            paper_id=assignment.paper_id,
+            result=result,
+        )
+        submission.status = "marked"
+        assignment.status = "marked"
 
-    assignment.status = "marked"
     from datetime import datetime
 
     assignment.completed_at = datetime.utcnow()
@@ -271,7 +293,9 @@ async def list_markings(
         .join(Submission, Marking.submission_id == Submission.id)
         .join(Assignment, Submission.assignment_id == Assignment.id)
     )
-    query = restrict_to_owner(query, Assignment, scope)
+    query = restrict_to_owner(query, Assignment, scope).filter(
+        Marking.deleted_at.is_(None)
+    )
 
     if childId:
         if not get_owned_child(db, childId, scope):
@@ -295,6 +319,8 @@ async def list_markings(
                 marksAvailable=marking.marks_available,
                 weakTopics=marking.weak_topics or [],
                 markedAt=marking.marked_at.isoformat() if marking.marked_at else None,
+                status=marking.status or "marked",
+                reviewReason=marking.review_reason,
             )
             for marking, assignment in rows
         ],
@@ -382,6 +408,9 @@ async def override_question_mark(
 
     db.flush()
     _recalculate_marking(db, marking)
+    # Topic mastery was accumulated from the marks that have just changed, so it
+    # has to be worked out again rather than nudged.
+    work_service.recompute_mastery(db, marking.child_id)
     db.commit()
     db.refresh(marking)
 
@@ -403,6 +432,10 @@ def _recalculate_marking(db: Session, marking: Marking) -> None:
     marking.marks_available = round(available, 1)
     marking.percentage = round(awarded / available * 100, 1) if available else None
     marking.marked_by = "parent"
+    # A person has now been through it question by question, so whatever the app
+    # was unsure of has been settled.
+    marking.status = work_service.MARKED
+    marking.review_reason = None
 
     totals: Dict[str, List[float]] = {}
     for qm in question_marks:

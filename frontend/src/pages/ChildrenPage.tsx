@@ -196,9 +196,95 @@ function SubjectEditor({ child }: { child: Child }) {
   )
 }
 
+/**
+ * Change a student's details in place.
+ *
+ * Without this the only way to fix a typo was to make a second student and
+ * move everything across, which is how records end up with a "Yuri (new)" in
+ * them.
+ */
+function DetailsEditor({ child, onSaved }: { child: Child; onSaved: () => Promise<void> }) {
+  const [name, setName] = useState(child.name)
+  const [yearGroup, setYearGroup] = useState(child.yearGroup ?? '')
+  const [emoji, setEmoji] = useState(child.avatarEmoji ?? '')
+  const [colour, setColour] = useState(child.colour ?? 'orange')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const save = async () => {
+    if (!name.trim()) return
+    setSaving(true)
+    try {
+      await api.updateChild(child.id, {
+        name: name.trim(),
+        yearGroup: yearGroup.trim(),
+        avatarEmoji: emoji.trim(),
+        colour,
+      })
+      await onSaved()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save those details')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const field = 'w-full rounded-xl border border-slate-300 p-2.5 text-sm'
+
+  return (
+    <div className="space-y-3">
+      {error && <ErrorBanner message={error} />}
+      <div className="grid gap-3 sm:grid-cols-4">
+        <div className="sm:col-span-2">
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Name</label>
+          <input className={field} value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Year group</label>
+          <input
+            className={field}
+            value={yearGroup}
+            onChange={(e) => setYearGroup(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Emoji</label>
+          <input
+            className={field}
+            value={emoji}
+            maxLength={4}
+            onChange={(e) => setEmoji(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">Colour</label>
+          <div className="flex gap-2">
+            {THEME_NAMES.map((option) => (
+              <button
+                key={option}
+                onClick={() => setColour(option)}
+                className={`h-8 w-8 rounded-full bg-gradient-to-br ${theme(option).gradient} ${
+                  colour === option ? 'ring-2 ring-slate-900 ring-offset-2' : ''
+                }`}
+              />
+            ))}
+          </div>
+        </div>
+        <Button size="sm" onClick={() => void save()} disabled={saving || !name.trim()}>
+          {saving ? 'Saving…' : 'Save details'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 export default function ChildrenPage() {
   const { children, reload, loading } = useChildren()
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [editing, setEditing] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [yearGroup, setYearGroup] = useState('')
   const [colour, setColour] = useState('orange')
@@ -331,6 +417,13 @@ export default function ChildrenPage() {
                   <Button
                     size="sm"
                     variant="secondary"
+                    onClick={() => setEditing(editing === child.id ? null : child.id)}
+                  >
+                    {editing === child.id ? 'Close' : 'Edit'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
                     onClick={() => setExpanded(isOpen ? null : child.id)}
                   >
                     {isOpen ? 'Close' : 'Subjects'}
@@ -339,6 +432,18 @@ export default function ChildrenPage() {
                     🗑
                   </Button>
                 </div>
+
+                {editing === child.id && (
+                  <div className="mt-4 border-t border-slate-100 pt-4">
+                    <DetailsEditor
+                      child={child}
+                      onSaved={async () => {
+                        setEditing(null)
+                        await reload()
+                      }}
+                    />
+                  </div>
+                )}
 
                 {isOpen && (
                   <div className="mt-4 border-t border-slate-100 pt-4">

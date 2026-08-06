@@ -244,6 +244,44 @@ export interface MarkingListItem {
   marksAvailable?: number | null
   weakTopics: string[]
   markedAt?: string | null
+  /** needs_review when the app could not produce a score it can stand behind. */
+  status?: 'marked' | 'needs_review'
+  reviewReason?: string | null
+}
+
+/**
+ * One piece of work on a child's record, as something that can be corrected.
+ *
+ * Keyed by the assignment rather than the marking, because deleting or moving
+ * a paper takes the completion with it.
+ */
+export interface WorkItem {
+  id: string
+  markingId?: string | null
+  submissionId?: string | null
+  childId: string
+  title: string
+  subject: string
+  doneOn?: string | null
+  marksAwarded?: number | null
+  marksAvailable?: number | null
+  percentage?: number | null
+  status: 'marked' | 'needs_review' | 'unmarked'
+  reviewReason?: string | null
+  markedBy?: string | null
+  minutesSpent?: number | null
+  note?: string | null
+  weakTopics: string[]
+  deletedAt?: string | null
+}
+
+export interface WorkUpdate {
+  marksAwarded?: number
+  marksAvailable?: number
+  title?: string
+  subject?: string
+  doneOn?: string
+  note?: string
 }
 
 export interface TopicMastery {
@@ -297,6 +335,8 @@ export interface ChildProgress {
   weeklyMinutesTarget: number
   averagePercentage?: number | null
   streakDays: number
+  /** Work waiting for someone to score it. Not in the average. */
+  needsReviewCount: number
 }
 
 export interface RetestResult {

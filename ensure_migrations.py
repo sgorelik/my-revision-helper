@@ -103,6 +103,14 @@ def main():
         ("submissions", "pause_count", "pause_count INTEGER DEFAULT 0"),
         # Pages of the work kept as images, since a transcript loses the graphs
         ("submissions", "page_image_ids", "page_image_ids JSON"),
+        # Taking one wrong entry off the chart, and putting a mark right
+        ("assignments", "deleted_at", "deleted_at TIMESTAMP"),
+        ("submissions", "deleted_at", "deleted_at TIMESTAMP"),
+        ("submissions", "content_hash", "content_hash VARCHAR"),
+        ("markings", "deleted_at", "deleted_at TIMESTAMP"),
+        ("markings", "status", "status VARCHAR DEFAULT 'marked'"),
+        ("markings", "review_reason", "review_reason TEXT"),
+        ("score_log", "deleted_at", "deleted_at TIMESTAMP"),
     ]
     
     all_good = True

@@ -39,14 +39,13 @@ def _api() -> RevisionHelper:
     return RevisionHelper()
 
 
-def _resolve_child(api: RevisionHelper, wanted: str) -> Dict[str, Any]:
+def _match_child(children: List[Dict[str, Any]], wanted: str) -> Dict[str, Any]:
     """
-    A child from whatever they were called.
+    A child from whatever they were called, out of a roster already fetched.
 
-    Accepts the id or the name, because an assistant is told "upload this for
-    Yuri", never "for 42753c30-a0c5-48c1".
+    Split from _resolve_child so a bulk call can fetch the roster once instead
+    of once per row.
     """
-    children = api.children()
     if not children:
         raise ApiError("There are no children set up in the app yet.")
 
@@ -68,6 +67,16 @@ def _resolve_child(api: RevisionHelper, wanted: str) -> Dict[str, Any]:
 
     names = ", ".join(child["name"] for child in children)
     raise ApiError(f"No child called {wanted!r}. There is: {names}")
+
+
+def _resolve_child(api: RevisionHelper, wanted: str) -> Dict[str, Any]:
+    """
+    A child from whatever they were called.
+
+    Accepts the id or the name, because an assistant is told "upload this for
+    Yuri", never "for 42753c30-a0c5-48c1".
+    """
+    return _match_child(api.children(), wanted)
 
 
 def _resolve_paper(api: RevisionHelper, wanted: str) -> Dict[str, Any]:
@@ -394,6 +403,13 @@ def get_progress(child: str) -> str:
         f"- Streak: {streak} day{'' if streak == 1 else 's'}",
     ]
 
+    awaiting = progress.get("needsReviewCount") or 0
+    if awaiting:
+        lines.append(
+            f"- Awaiting a mark: {awaiting} "
+            f"(not in the average — use list_work to see them, then update_work to score them)"
+        )
+
     weak = [topic["topic"] for topic in progress.get("weakTopics", [])][:8]
     if weak:
         lines.append(f"- Weak topics: {', '.join(weak)}")
@@ -411,6 +427,473 @@ def get_progress(child: str) -> str:
             )
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Correcting the record
+# ---------------------------------------------------------------------------
+
+
+def _match_work(items: List[Dict[str, Any]], wanted: str, whose: str) -> Dict[str, Any]:
+    """One piece of work out of a record already fetched."""
+    if not items:
+        raise ApiError(f"{whose} has no recorded work.")
+
+    wanted = (wanted or "").strip()
+    if not wanted:
+        raise ApiError("Say which piece of work, by title or id.")
+
+    lowered = wanted.lower()
+    for item in items:
+        if item["id"] == wanted or item.get("markingId") == wanted:
+            return item
+        if item["title"].lower() == lowered:
+            return item
+
+    partial = [item for item in items if lowered in item["title"].lower()]
+    if len(partial) == 1:
+        return partial[0]
+    if len(partial) > 1:
+        titles = ", ".join(
+            f"{item['title']!r} ({item.get('doneOn', '')[:10]})" for item in partial[:6]
+        )
+        raise ApiError(f"More than one piece of work matches {wanted!r}: {titles}")
+
+    raise ApiError(f"Nothing called {wanted!r} on {whose}'s record. Try list_work.")
+
+
+def _resolve_work(api: RevisionHelper, child: str, wanted: str) -> Dict[str, Any]:
+    """
+    A piece of work from its id, or from what it is called.
+
+    Titles are how anyone refers to a paper out loud, so an assistant asked to
+    "fix the mark on the fractions worksheet" can find it without an id.
+    """
+    found = _resolve_child(api, child)
+    return _match_work(api.work(found["id"]), wanted, found["name"])
+
+
+def _describe(item: Dict[str, Any]) -> str:
+    """One line describing a piece of work, as a person would read it."""
+    when = (item.get("doneOn") or "")[:10]
+    if item.get("status") == "needs_review":
+        score = "awaiting a mark"
+    elif item.get("percentage") is not None:
+        score = f"{round(item['percentage'])}%"
+        if item.get("marksAvailable"):
+            score += f" ({item.get('marksAwarded')}/{item['marksAvailable']})"
+    else:
+        score = "no score"
+
+    return f"{item['title']} — {item['subject']}, {when or 'no date'}, {score}"
+
+
+@mcp.tool()
+def list_work(child: str, needs_review_only: bool = False) -> str:
+    """
+    A child's recorded work, newest first, with the ids needed to change it.
+
+    Set needs_review_only to see just the work the app could not mark, which is
+    sitting outside the average until someone scores it.
+    """
+    api = _api()
+    try:
+        found = _resolve_child(api, child)
+        items = api.work(found["id"], needs_review_only=needs_review_only)
+    except Exception as e:
+        return _fail(e)
+
+    if not items:
+        return (
+            f"{found['name']} has nothing waiting for a mark."
+            if needs_review_only
+            else f"{found['name']} has no recorded work yet."
+        )
+
+    lines = [f"{found['name']} — {len(items)} piece(s) of work:"]
+    for item in items:
+        lines.append(f"- {_describe(item)}")
+        lines.append(f"    id: {item['id']}")
+        if item.get("reviewReason"):
+            lines.append(f"    why it needs a look: {item['reviewReason']}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def update_work(
+    child: str,
+    work: str,
+    marks_awarded: Optional[float] = None,
+    marks_available: Optional[float] = None,
+    title: str = "",
+    subject: str = "",
+    done_on: str = "",
+    minutes_spent: Optional[int] = None,
+    note: str = "",
+) -> str:
+    """
+    Correct one piece of work: its mark, what it is called, or when it was done.
+
+    Use this when the auto-marker got a paper wrong, or to score work it could
+    not read. Identify the work by title or id; `child` narrows the search.
+    A mark set here is taken as final and counts towards the average.
+
+    To put several right at once, use correct_marks instead.
+    """
+    api = _api()
+    try:
+        item = _resolve_work(api, child, work)
+        updated = api.update_work(
+            item["id"],
+            marksAwarded=marks_awarded,
+            marksAvailable=marks_available,
+            title=title,
+            subject=subject,
+            doneOn=done_on,
+            minutesSpent=minutes_spent,
+            note=note,
+        )
+    except Exception as e:
+        return _fail(e)
+
+    return f"Updated: {_describe(updated)}"
+
+
+@mcp.tool()
+def delete_work(child: str, work: str) -> str:
+    """
+    Take one piece of work off a child's record.
+
+    Removes it from the averages and the charts immediately. It is recoverable
+    with restore_work, so a wrong entry does not mean rebuilding the child.
+    """
+    api = _api()
+    try:
+        item = _resolve_work(api, child, work)
+        api.delete_work(item["id"])
+    except Exception as e:
+        return _fail(e)
+
+    return (
+        f"Removed {item['title']!r} from the record. "
+        f"Undo with restore_work using id {item['id']}."
+    )
+
+
+@mcp.tool()
+def restore_work(child: str, work_id: str) -> str:
+    """Put back a piece of work that was taken off the record."""
+    api = _api()
+    try:
+        _resolve_child(api, child)  # So an unknown name fails clearly.
+        restored = api.restore_work(work_id)
+    except Exception as e:
+        return _fail(e)
+
+    return f"Put back: {_describe(restored)}"
+
+
+@mcp.tool()
+def move_work(work: str, from_child: str, to_child: str) -> str:
+    """
+    Move a piece of work to a different child.
+
+    For work logged against the wrong one. Both children's figures are worked
+    out again.
+    """
+    api = _api()
+    try:
+        item = _resolve_work(api, from_child, work)
+        destination = _resolve_child(api, to_child)
+        api.move_work(item["id"], destination["id"])
+    except Exception as e:
+        return _fail(e)
+
+    return f"Moved {item['title']!r} to {destination['name']}."
+
+
+@mcp.tool()
+def rename_child(child: str, name: str = "", year_group: str = "", emoji: str = "", colour: str = "") -> str:
+    """
+    Change a child's name, year group, emoji or colour.
+
+    Saves having to create a second student to fix a typo.
+    """
+    api = _api()
+    try:
+        found = _resolve_child(api, child)
+        updated = api.update_child(
+            found["id"], name=name, yearGroup=year_group, avatarEmoji=emoji, colour=colour
+        )
+    except Exception as e:
+        return _fail(e)
+
+    return f"Updated: {updated['name']}" + (
+        f" ({updated['yearGroup']})" if updated.get("yearGroup") else ""
+    )
+
+
+# ---------------------------------------------------------------------------
+# Doing a whole week at once
+# ---------------------------------------------------------------------------
+
+# Enough for a fortnight of both children's work, while still small enough that
+# a failure part way through is easy to read and put right.
+MAX_ROWS_PER_CALL = 40
+
+
+class RowError(Exception):
+    """A single row was wrong. The rest of the batch carries on."""
+
+
+def _text(row: Dict[str, Any], *names: str) -> str:
+    """A string field under any of the names an assistant might use for it."""
+    for name in names:
+        value = row.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _number(row: Dict[str, Any], *names: str) -> Optional[float]:
+    """A numeric field, refusing rather than guessing at nonsense."""
+    for name in names:
+        value = row.get(name)
+        if value in (None, ""):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise RowError(f"{name} should be a number, not {value!r}")
+    return None
+
+
+def _whole(row: Dict[str, Any], *names: str) -> Optional[int]:
+    value = _number(row, *names)
+    return None if value is None else int(value)
+
+
+def _report(heading: str, done: List[str], failed: List[str]) -> str:
+    """One readable summary of a batch, saying plainly what did not happen."""
+    lines = [heading]
+    lines += [f"  ✓ {line}" for line in done]
+    lines += [f"  ✗ {line}" for line in failed]
+
+    if failed:
+        lines.append(
+            f"{len(done)} of {len(done) + len(failed)} went through. "
+            "The rest were left alone — fix those and send them again."
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def record_results(results: List[Dict[str, Any]], child: str = "") -> str:
+    """
+    Record a batch of already-marked work in one go. The quickest way to catch
+    the app up on a week of paper worksheets.
+
+    Each row in `results` is one piece of work:
+      - title: what it was, e.g. "Level 2 calculator paper"     (required)
+      - subject: e.g. "Maths"                                    (required)
+      - marks_awarded and marks_available: the score, e.g. 41 and 50
+      - done_on: ISO date, e.g. "2026-08-03". Defaults to today.
+      - minutes_spent: how long it took
+      - note: anything worth remembering
+      - child: whose it is, if the batch covers more than one
+
+    `child` sets the default for rows that do not name one, so a single call
+    can cover both children.
+
+    Nothing is scanned or marked here — the scores are taken as given and go
+    straight onto the progress chart. To have the app mark a scan, use
+    hand_in_work.
+
+    A row that is wrong is reported and skipped; the others still go in.
+    """
+    if not results:
+        return "Nothing to record."
+    if len(results) > MAX_ROWS_PER_CALL:
+        return (
+            f"That is {len(results)} rows; {MAX_ROWS_PER_CALL} is the most in one call. "
+            "Send it in batches."
+        )
+
+    api = _api()
+    try:
+        roster = api.children()
+    except Exception as e:
+        return _fail(e)
+
+    done: List[str] = []
+    failed: List[str] = []
+
+    for index, row in enumerate(results, start=1):
+        label = _text(row, "title") or f"row {index}"
+        try:
+            if not isinstance(row, dict):
+                raise RowError("each result should be an object with a title and a subject")
+
+            title = _text(row, "title")
+            subject = _text(row, "subject")
+            if not title:
+                raise RowError("no title")
+            if not subject:
+                raise RowError("no subject")
+
+            awarded = _number(row, "marks_awarded", "marksAwarded", "score")
+            available = _number(row, "marks_available", "marksAvailable", "out_of")
+            minutes = _whole(row, "minutes_spent", "minutesSpent", "minutes")
+
+            if awarded is not None and available is None:
+                raise RowError("a score needs the total it was out of")
+            if awarded is None and available is not None:
+                raise RowError("a total needs a score to go with it")
+            if awarded is None and minutes is None:
+                raise RowError("give a score, or the time it took — otherwise there is nothing to record")
+
+            whose = _match_child(roster, _text(row, "child", "student") or child)
+
+            api.hand_in(
+                child_id=whose["id"],
+                subject=subject,
+                title=title,
+                note=_text(row, "note"),
+                done_on=_text(row, "done_on", "doneOn", "date"),
+                minutes_spent=minutes,
+                marks_awarded=awarded,
+                marks_available=available,
+                save_to_library=False,
+            )
+        except Exception as e:
+            failed.append(f"{label} — {e}")
+            continue
+
+        scored = f"{awarded:g}/{available:g}" if awarded is not None else "no score"
+        done.append(f"{title} ({whose['name']}, {subject}, {scored})")
+
+    return _report(f"Recorded {len(done)} piece(s) of work:", done, failed)
+
+
+@mcp.tool()
+def correct_marks(corrections: List[Dict[str, Any]], child: str = "") -> str:
+    """
+    Put several marks right in one go, for when the auto-marker has been wrong
+    across a batch of papers.
+
+    Each row in `corrections` names one piece of work and what to change:
+      - work: its title or id, e.g. "fractions worksheet"        (required)
+      - marks_awarded and marks_available: the corrected score
+      - subject, done_on, minutes_spent, note: to fix those too
+      - new_title: to rename it. `work` always means the current title.
+      - child: whose it is, if the batch covers more than one
+
+    Marks set here are final and count towards the average, so this is also how
+    to score work the app could not read. Use list_work first to see the titles.
+
+    A row that cannot be found is reported and skipped; the others still apply.
+    """
+    if not corrections:
+        return "Nothing to correct."
+    if len(corrections) > MAX_ROWS_PER_CALL:
+        return (
+            f"That is {len(corrections)} rows; {MAX_ROWS_PER_CALL} is the most in one call. "
+            "Send it in batches."
+        )
+
+    api = _api()
+    try:
+        roster = api.children()
+    except Exception as e:
+        return _fail(e)
+
+    # One fetch per child, however many of their papers the batch touches.
+    records: Dict[str, List[Dict[str, Any]]] = {}
+    done: List[str] = []
+    failed: List[str] = []
+
+    for index, row in enumerate(corrections, start=1):
+        label = _text(row, "work", "title") or f"row {index}"
+        try:
+            if not isinstance(row, dict):
+                raise RowError("each correction should be an object naming the work to change")
+
+            wanted = _text(row, "work", "work_id", "id", "title")
+            if not wanted:
+                raise RowError("say which piece of work")
+
+            whose = _match_child(roster, _text(row, "child", "student") or child)
+            if whose["id"] not in records:
+                records[whose["id"]] = api.work(whose["id"])
+
+            item = _match_work(records[whose["id"]], wanted, whose["name"])
+
+            updated = api.update_work(
+                item["id"],
+                marksAwarded=_number(row, "marks_awarded", "marksAwarded", "score"),
+                marksAvailable=_number(row, "marks_available", "marksAvailable", "out_of"),
+                title=_text(row, "new_title", "rename_to"),
+                subject=_text(row, "subject"),
+                doneOn=_text(row, "done_on", "doneOn", "date"),
+                minutesSpent=_whole(row, "minutes_spent", "minutesSpent", "minutes"),
+                note=_text(row, "note"),
+            )
+        except Exception as e:
+            failed.append(f"{label} — {e}")
+            continue
+
+        done.append(f"{whose['name']}: {_describe(updated)}")
+
+    return _report(f"Corrected {len(done)} piece(s) of work:", done, failed)
+
+
+@mcp.tool()
+def work_needing_marks() -> str:
+    """
+    Everything across all the children that is waiting for a mark.
+
+    Work the app could not read is recorded as done but left without a score,
+    so it stays out of the averages. This is the list of what to go and score,
+    which correct_marks can then do in one call.
+    """
+    api = _api()
+    try:
+        roster = api.children()
+    except Exception as e:
+        return _fail(e)
+
+    lines: List[str] = []
+    total = 0
+    for whose in roster:
+        try:
+            items = api.work(whose["id"], needs_review_only=True)
+        except Exception as e:
+            lines.append(f"{whose['name']}: could not be read — {e}")
+            continue
+
+        if not items:
+            continue
+
+        total += len(items)
+        lines.append(f"{whose['name']}:")
+        for item in items:
+            out_of = item.get("marksAvailable")
+            lines.append(
+                f"  - {item['title']} ({item['subject']}, {(item.get('doneOn') or '')[:10]})"
+                + (f", out of {out_of:g}" if out_of else "")
+            )
+            if item.get("reviewReason"):
+                lines.append(f"      {item['reviewReason']}")
+
+    if not total:
+        return "Nothing is waiting for a mark."
+
+    return (
+        f"{total} piece(s) waiting for a mark, not counted in any average:\n"
+        + "\n".join(lines)
+        + "\n\nScore them with correct_marks, naming each by its title."
+    )
 
 
 def main() -> None:

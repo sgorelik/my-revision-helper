@@ -408,6 +408,9 @@ class Assignment(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     completed_at = Column(DateTime)
 
+    # Taken off the lists and the totals, but still here to be put back.
+    deleted_at = Column(DateTime)
+
     child = relationship("Child", back_populates="assignments")
     paper = relationship("Paper")
     submissions = relationship("Submission", back_populates="assignment", cascade="all, delete-orphan")
@@ -436,6 +439,13 @@ class Submission(Base):
     status = Column(String, default="submitted")  # submitted, marking, marked, failed
     submitted_at = Column(DateTime, default=datetime.utcnow)
 
+    # What was handed in, as a digest of the files and text. Lets a resend that
+    # followed a timeout find the record it already made rather than making a
+    # second one.
+    content_hash = Column(String, index=True)
+
+    deleted_at = Column(DateTime)
+
     assignment = relationship("Assignment", back_populates="submissions")
     marking = relationship("Marking", back_populates="submission", uselist=False, cascade="all, delete-orphan")
 
@@ -461,6 +471,16 @@ class Marking(Base):
     model = Column(String)
     langfuse_trace_id = Column(String)
     marked_at = Column(DateTime, default=datetime.utcnow)
+
+    # Whether this score can be believed. Work that could not be read, or that
+    # the marker was unsure of, is kept as needs_review with no percentage, so
+    # it waits for a person instead of dragging the average down as a zero.
+    status = Column(String, default="marked")  # marked, needs_review
+    review_reason = Column(Text)  # Why it needs a look, shown to the parent
+
+    # Set instead of deleting, so a wrong entry can be taken off the chart
+    # without losing the work behind it.
+    deleted_at = Column(DateTime)
 
     submission = relationship("Submission", back_populates="marking")
     question_marks = relationship(
@@ -532,4 +552,7 @@ class ScoreLogEntry(Base):
     marking_id = Column(String, ForeignKey("markings.id"), nullable=True)
     notes = Column(Text)
     recorded_at = Column(DateTime, default=datetime.utcnow)
+
+    # Goes with the marking it came from when that is taken off the chart.
+    deleted_at = Column(DateTime)
 

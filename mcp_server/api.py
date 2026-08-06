@@ -189,3 +189,28 @@ class RevisionHelper:
             payload["estimatedMinutes"] = estimated_minutes
 
         return self._request("POST", "/assignments", json=payload)
+
+    # -- correcting the record ----------------------------------------------
+
+    def work(self, child_id: str, *, needs_review_only: bool = False) -> List[Dict[str, Any]]:
+        query: Dict[str, Any] = {"childId": child_id}
+        if needs_review_only:
+            query["needsReviewOnly"] = "true"
+        return self._request("GET", "/work", params=query)["items"]
+
+    def update_work(self, work_id: str, **fields: Any) -> Dict[str, Any]:
+        payload = {k: v for k, v in fields.items() if v is not None and v != ""}
+        return self._request("PATCH", f"/work/{work_id}", json=payload)
+
+    def delete_work(self, work_id: str) -> Dict[str, Any]:
+        return self._request("DELETE", f"/work/{work_id}")
+
+    def restore_work(self, work_id: str) -> Dict[str, Any]:
+        return self._request("POST", f"/work/{work_id}/restore", json={})
+
+    def move_work(self, work_id: str, to_child_id: str) -> Dict[str, Any]:
+        return self._request("POST", f"/work/{work_id}/move", json={"toChildId": to_child_id})
+
+    def update_child(self, child_id: str, **fields: Any) -> Dict[str, Any]:
+        payload = {k: v for k, v in fields.items() if v is not None and v != ""}
+        return self._request("PATCH", f"/children/{child_id}", json=payload)

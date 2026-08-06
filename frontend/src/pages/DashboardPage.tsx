@@ -25,6 +25,8 @@ import {
 import { api } from '../api/client'
 import type { ChildProgress, TopicMastery } from '../api/types'
 import HandInForm from '../components/HandInForm'
+import { MarkedWorkList } from '../components/MarkedWorkList'
+import { useChildren } from '../context/ChildContext'
 import {
   Button,
   Card,
@@ -276,6 +278,8 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null)
   const [handingIn, setHandingIn] = useState(false)
 
+  const { children } = useChildren()
+
   const load = useCallback(async () => {
     if (!childId) return
     setLoading(true)
@@ -286,6 +290,17 @@ export default function DashboardPage() {
       setError(e instanceof Error ? e.message : 'Could not load progress')
     } finally {
       setLoading(false)
+    }
+  }, [childId])
+
+  // Redraw the figures after a correction without blanking the page, which
+  // would throw away the place the parent had got to in the list.
+  const reload = useCallback(async () => {
+    if (!childId) return
+    try {
+      setProgress(await api.getProgress(childId))
+    } catch {
+      // The list below reports its own failures; a stale header is harmless.
     }
   }, [childId])
 
@@ -361,7 +376,11 @@ export default function DashboardPage() {
         <StatTile
           label="Average score"
           value={progress.averagePercentage != null ? `${Math.round(progress.averagePercentage)}%` : '—'}
-          hint="across all marked work"
+          hint={
+            progress.needsReviewCount > 0
+              ? `${progress.needsReviewCount} awaiting a mark, not counted`
+              : 'across all marked work'
+          }
           tone={
             (progress.averagePercentage ?? 0) >= 70
               ? 'text-emerald-600'
@@ -479,45 +498,11 @@ export default function DashboardPage() {
         </section>
 
         <section>
-          <SectionTitle title="Marked work" />
-          {progress.recentMarkings.length === 0 ? (
-            <EmptyState icon="📝" title="Nothing marked yet" />
-          ) : (
-            <div className="space-y-2">
-              {progress.recentMarkings.map((marking) => (
-                <Link key={marking.id} to={`/marking/${marking.id}`}>
-                  <Card className="!p-4 transition-shadow hover:shadow-md">
-                    <div className="flex items-center gap-3">
-                      <span className="text-xl">{subjectIcon(marking.subject)}</span>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium text-slate-800">
-                          {marking.assignmentTitle || marking.subject}
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          {marking.markedAt
-                            ? new Date(marking.markedAt).toLocaleDateString()
-                            : ''}
-                          {marking.weakTopics.length > 0 &&
-                            ` · weak on ${marking.weakTopics.slice(0, 2).join(', ')}`}
-                        </div>
-                      </div>
-                      <span
-                        className={`text-xl font-bold ${
-                          (marking.percentage ?? 0) >= 70
-                            ? 'text-emerald-600'
-                            : (marking.percentage ?? 0) >= 50
-                              ? 'text-amber-600'
-                              : 'text-rose-600'
-                        }`}
-                      >
-                        {marking.percentage != null ? `${Math.round(marking.percentage)}%` : '—'}
-                      </span>
-                    </div>
-                  </Card>
-                </Link>
-              ))}
-            </div>
-          )}
+          <SectionTitle
+            title="Marked work"
+            subtitle="Correct a mark the app got wrong, or take an entry off the record"
+          />
+          <MarkedWorkList childId={child.id} siblings={children} onChange={() => void reload()} />
         </section>
       </div>
     </div>

@@ -29,6 +29,15 @@ The app on Railway ──── parses each paper, hides the answer key
 | `hand_in_work` | Record work that was never assigned, and mark it |
 | `assign_work` | Put a paper or a task on a child's plan |
 | `get_progress` | Work done, average score, time, weak topics |
+| `record_results` | Record a whole batch of already-marked work in one call |
+| `correct_marks` | Put several marks right in one call |
+| `work_needing_marks` | Everything across all children waiting to be scored |
+| `list_work` | What is on a child's record, with the ids needed to change it |
+| `update_work` | Correct one mark, title, subject, date, time or note |
+| `delete_work` | Take one wrong entry off the record |
+| `restore_work` | Put back something removed by mistake |
+| `move_work` | Move work logged against the wrong child |
+| `rename_child` | Change a name, year group, emoji or colour |
 
 ## Setting it up
 
@@ -132,9 +141,36 @@ Things worth saying out loud:
 - "Yuri got 18 out of 25 on the calculator paper on Monday, took him an hour"
 - "Assign the Level 2 calculator paper to both of them for next Tuesday"
 - "How is Savva doing in chemistry?"
+- "The comprehension paper was marked 42%, it should be 41 out of 50"
+- "Delete Yuri's mis-marked fractions worksheet"
+- "The English scan I put on Savva was actually Yuri's — move it"
+- "What's waiting for a mark?"
 
 Leave the subject out of an upload and it is guessed per file from the
 filename, which works when they are named like `Maths_Week1_Workbook.docx`.
+
+### Keeping the record up to date
+
+Most updating is faster in batches. Say the week out loud and let it go in as
+one call:
+
+> "Catch the app up on this week. Yuri: calculator paper 41/50 on Monday, an
+> hour; comprehension 18/20 Tuesday, 40 minutes. Savva: chemistry quiz 14/20
+> Wednesday, half an hour; read two chapters Thursday, 45 minutes."
+
+That is one `record_results` call covering both children. Rows can each name
+their own child, and a row that is wrong is reported and skipped rather than
+taking the good ones down with it.
+
+Corrections work the same way:
+
+> "What's waiting for a mark?" → `work_needing_marks`
+> "Score the comprehension 33 out of 40 and the physics 22 out of 30"
+> → one `correct_marks` call
+
+`record_results` takes scores as given and does not scan or mark anything, so
+it is quick. Use `hand_in_work` when you want the app to read a scan and mark
+it, and `upload_papers` for blank papers going into the library.
 
 ## Things to know
 
@@ -151,6 +187,14 @@ the answers stripped out.
 **Files never go through the model.** The server reads them from disk and posts
 them straight to the app. Claude only ever sees the paths and the summary that
 comes back.
+
+**Work the app cannot mark is not scored nought.** A scan it could not read is
+recorded as done and left without a percentage, out of the average, until
+someone supplies one. `list_work` with `needs_review_only` shows what is
+waiting; `update_work` scores it.
+
+**Nothing is really deleted.** `delete_work` takes an entry off the averages and
+the charts but keeps it, so `restore_work` can put it back.
 
 ## When something is wrong
 

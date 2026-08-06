@@ -129,7 +129,10 @@ def serialise_assignment(
         marking = (
             db.query(Marking)
             .join(Submission, Marking.submission_id == Submission.id)
-            .filter(Submission.assignment_id == assignment.id)
+            .filter(
+                Submission.assignment_id == assignment.id,
+                Marking.deleted_at.is_(None),
+            )
             .order_by(Marking.marked_at.desc())
             .first()
         )
@@ -339,7 +342,9 @@ async def list_assignments(
         return AssignmentListResponse(items=[], total=0)
 
     scope = build_scope(user, session_id)
-    query = restrict_to_owner(db.query(Assignment), Assignment, scope)
+    query = restrict_to_owner(db.query(Assignment), Assignment, scope).filter(
+        Assignment.deleted_at.is_(None)
+    )
 
     if childId:
         if not get_owned_child(db, childId, scope):

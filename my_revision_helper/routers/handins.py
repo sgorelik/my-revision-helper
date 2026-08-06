@@ -37,6 +37,7 @@ from ..file_processing import process_uploaded_files
 from ..llm import get_openai_client, get_reasoning_model
 from ..models_db import Assignment, Child, Paper, PaperQuestion, Submission
 from ..schemas.study import HandInResponse
+from ..services import work as work_service
 from ..services.file_store import FileTooLargeError, store_uploads
 from ..services.marking_service import (
     MarkingResult,
@@ -411,17 +412,10 @@ async def _record_with_work(
     """A scan or typed answers: keep the pages, then mark them."""
     from .submissions import _marking_response
 
+    # Only marking needs the model. Without it the pages are still kept and the
+    # work still counts as done; it simply waits for a mark, which is better
+    # than turning the parent away with the scan in their hand.
     openai_client = get_openai_client()
-    # Only marking needs the model. A parent who already knows the score is
-    # handing in a record, not asking for an opinion, so that should still work.
-    if not openai_client and marks_awarded is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Marking is unavailable because OPENAI_API_KEY is not configured. "
-                "Add the score yourself to record this without marking."
-            ),
-        )
 
     try:
         file_ids, file_contents = await store_uploads(
@@ -443,14 +437,10 @@ async def _record_with_work(
         text_parts.append(f"--- {filename} ---\n{text}")
 
     student_work = "\n\n".join(text_parts).strip()
-    if not student_work:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not read any work from the upload. Try a clearer photo, or type the answers.",
-        )
+    unreadable = not student_work
 
     paper = None
-    if save_to_library:
+    if save_to_library and not unreadable:
         paper = await _paper_from_completed_work(
             db,
             scope,
@@ -531,40 +521,66 @@ async def _record_with_work(
     questions = load_paper_questions(db, paper.id) if paper else []
     model = get_reasoning_model()
 
-    try:
-        if questions:
-            result = mark_per_question(
-                questions,
-                student_work,
-                subject=subject,
-                client=openai_client,
-                model=model,
-                pages=load_page_images(db, page_image_ids),
-            )
-        else:
-            result = mark_holistically(
-                student_work,
-                subject=subject,
-                year_group=child.year_group,
-                client=openai_client,
-                model=model,
-            )
-    except Exception as e:
-        submission.status = "failed"
-        # The work was still handed in, so leave it recorded as done rather than
-        # pretending nothing arrived.
-        db.commit()
-        logger.error(f"Marking failed for hand-in {submission.id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Marking failed: {e}")
+    # A score the app cannot stand behind is worse than no score: it lands in
+    # the average as a nought and reads as though the child failed. So anything
+    # that goes wrong here parks the work for a person instead.
+    reason: Optional[str] = None
+    result = None
 
-    marking = persist_marking(
-        db,
-        submission=submission,
-        subject=subject,
-        paper_id=paper.id if paper else None,
-        result=result,
-    )
-    assignment.status = "marked"
+    if not openai_client:
+        reason = "Marking is switched off on this server. Enter the mark yourself."
+    elif unreadable:
+        reason = (
+            "The writing on this upload could not be read. "
+            "Enter the mark yourself, or try a clearer photo."
+        )
+    else:
+        try:
+            if questions:
+                result = mark_per_question(
+                    questions,
+                    student_work,
+                    subject=subject,
+                    client=openai_client,
+                    model=model,
+                    pages=load_page_images(db, page_image_ids),
+                )
+            else:
+                result = mark_holistically(
+                    student_work,
+                    subject=subject,
+                    year_group=child.year_group,
+                    client=openai_client,
+                    model=model,
+                )
+        except Exception as e:
+            logger.error(f"Marking failed for hand-in {submission.id}: {e}", exc_info=True)
+            reason = f"Marking could not be completed: {e}"
+        else:
+            reason = work_service.unbelievable(result)
+
+    if reason:
+        marking = work_service.record_unmarked(
+            db,
+            submission=submission,
+            subject=subject,
+            paper_id=paper.id if paper else None,
+            reason=reason,
+            result=result,
+        )
+        submission.status = "marked"
+        assignment.status = "done"
+    else:
+        marking = persist_marking(
+            db,
+            submission=submission,
+            subject=subject,
+            paper_id=paper.id if paper else None,
+            result=result,
+        )
+        submission.status = "marked"
+        assignment.status = "marked"
+
     db.commit()
 
     return reply(marking)
