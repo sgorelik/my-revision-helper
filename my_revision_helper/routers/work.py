@@ -258,6 +258,10 @@ async def update_work(
         assignment.status = "marked"
 
     db.flush()
+    # A new title or date changes what the chart should show even though the
+    # mark itself has not moved.
+    if marking:
+        work_service.refresh_score_log(db, marking)
     work_service.recompute_mastery(db, assignment.child_id)
     db.commit()
 

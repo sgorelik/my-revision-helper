@@ -525,3 +525,98 @@ class TestWorkTheAppCouldNotMark:
 
         after = client.get(f"/api/children/{child}/progress").json()["assignmentsDone"]
         assert after == before + 1
+
+
+# ---------------------------------------------------------------------------
+# What the charts are given to draw
+# ---------------------------------------------------------------------------
+
+
+def _subjects(client, child):
+    rollup = client.get(f"/api/children/{child}/progress").json()["subjects"]
+    return {row["subject"]: row for row in rollup}
+
+
+@pytest.mark.integration
+class TestSubjectsAChildHasActuallyWorkedIn:
+    """
+    The rollup used to come only from configured subjects, so work handed in by
+    script showed a full record of marks beside an empty subject chart.
+    """
+
+    def test_a_subject_appears_once_there_is_work_in_it(self, client, child):
+        _record(client, child, title="Atoms", awarded=8, available=10, subject="Chemistry")
+
+        assert "Chemistry" in _subjects(client, child)
+
+    def test_it_carries_the_average_across_that_subject(self, client, child):
+        _record(client, child, title="Paper one", awarded=9, available=10, subject="Physics")
+        _record(client, child, title="Paper two", awarded=7, available=10, subject="Physics")
+
+        assert _subjects(client, child)["Physics"]["averageScore"] == 80.0
+
+    def test_it_says_how_many_results_the_average_rests_on(self, client, child):
+        _record(client, child, title="Only one", awarded=9, available=10, subject="Biology")
+
+        assert _subjects(client, child)["Biology"]["markedCount"] == 1
+
+    def test_subjects_stay_apart(self, client, child):
+        _record(client, child, title="Maths", awarded=10, available=10, subject="Mathematics")
+        _record(client, child, title="English", awarded=5, available=10, subject="English")
+
+        rows = _subjects(client, child)
+        assert rows["Mathematics"]["averageScore"] == 100.0
+        assert rows["English"]["averageScore"] == 50.0
+
+    def test_work_taken_off_the_record_stops_counting(self, client, child):
+        _record(client, child, title="Good", awarded=9, available=10, subject="Chemistry")
+        wrong = _record(client, child, title="Wrong", awarded=1, available=10, subject="Chemistry")
+
+        client.delete(f"/api/work/{wrong['assignmentId']}")
+
+        row = _subjects(client, child)["Chemistry"]
+        assert row["averageScore"] == 90.0
+        assert row["markedCount"] == 1
+
+
+@pytest.mark.integration
+class TestWhenAResultLandsOnTheChart:
+    """
+    The chart is a record of when work was done. A fortnight of paper
+    worksheets caught up on one evening used to stack on that evening, which
+    made the trend line meaningless just when it was most wanted.
+    """
+
+    def _chart(self, client, child):
+        return client.get(f"/api/children/{child}/score-log").json()
+
+    def test_it_lands_on_the_day_the_work_was_done(self, client, child):
+        _record(client, child, title="Old paper", awarded=8, available=10, done_on="2026-07-14")
+
+        entry = next(e for e in self._chart(client, child) if e["label"] == "Old paper")
+        assert entry["recordedAt"].startswith("2026-07-14")
+
+    def test_a_backlog_spreads_out_rather_than_stacking(self, client, child):
+        for day in ("2026-07-14", "2026-07-16", "2026-07-18"):
+            _record(client, child, title=f"Paper {day}", awarded=8, available=10, done_on=day)
+
+        days = {e["recordedAt"][:10] for e in self._chart(client, child)}
+        assert days == {"2026-07-14", "2026-07-16", "2026-07-18"}
+
+    def test_correcting_the_date_moves_the_point(self, client, child):
+        work = _record(client, child, title="Wrong day", awarded=8, available=10, done_on="2026-07-14")
+
+        response = client.patch(f"/api/work/{work['assignmentId']}", json={"doneOn": "2026-07-02"})
+        assert response.status_code == 200
+
+        entry = next(e for e in self._chart(client, child) if e["label"] == "Wrong day")
+        assert entry["recordedAt"].startswith("2026-07-02")
+
+    def test_correcting_the_title_renames_the_point(self, client, child):
+        work = _record(client, child, title="Untitled", awarded=8, available=10)
+
+        client.patch(f"/api/work/{work['assignmentId']}", json={"title": "Trigonometry"})
+
+        labels = [e["label"] for e in self._chart(client, child)]
+        assert "Trigonometry" in labels
+        assert "Untitled" not in labels

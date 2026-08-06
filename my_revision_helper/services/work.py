@@ -288,9 +288,17 @@ def _sync_score_log(db: Session, marking: Marking) -> None:
             entry.deleted_at = datetime.utcnow()
         return
 
+    assignment = _assignment_behind(db, marking)
+    # The chart is a record of when work was done, not of when someone got
+    # round to typing the mark in.
+    when = (assignment.completed_at if assignment else None) or marking.marked_at
+
     if entry:
         entry.score_pct = marking.percentage
         entry.subject = marking.subject
+        entry.label = (assignment.title if assignment else None) or entry.label
+        if when:
+            entry.recorded_at = when
         entry.deleted_at = None
         return
 
@@ -301,24 +309,34 @@ def _sync_score_log(db: Session, marking: Marking) -> None:
             id=str(uuid.uuid4()),
             child_id=marking.child_id,
             subject=marking.subject,
-            label=_label_for(db, marking),
+            label=(assignment.title if assignment else None) or marking.subject,
             score_pct=marking.percentage,
             source="marking",
             marking_id=marking.id,
-            recorded_at=marking.marked_at or datetime.utcnow(),
+            recorded_at=when or datetime.utcnow(),
         )
     )
 
 
-def _label_for(db: Session, marking: Marking) -> str:
-    """What to call this result on the chart."""
-    assignment = (
+def refresh_score_log(db: Session, marking: Marking) -> None:
+    """
+    Make the chart agree with the work again.
+
+    Needed after a title, subject or date is corrected, since those are what
+    the chart plots and none of them touch the mark itself.
+    """
+    _sync_score_log(db, marking)
+    db.flush()
+
+
+def _assignment_behind(db: Session, marking: Marking) -> Optional[Assignment]:
+    """The piece of work a marking belongs to."""
+    return (
         db.query(Assignment)
         .join(Submission, Submission.assignment_id == Assignment.id)
         .filter(Submission.id == marking.submission_id)
         .first()
     )
-    return (assignment.title if assignment else None) or marking.subject
 
 
 # ---------------------------------------------------------------------------

@@ -502,6 +502,10 @@ class SubjectProgressResponse(BaseModel):
     yearAverage: Optional[float] = None
     targetScore: Optional[float] = None
     latestScore: Optional[float] = None
+    # The average across everything marked in this subject, and how many that
+    # is. A single result says little; the count says how much to read into it.
+    averageScore: Optional[float] = None
+    markedCount: int = 0
     gapToAverage: Optional[float] = None  # latest minus year average
     baselineGap: Optional[float] = None  # baseline minus year average
     weeklyMinutes: int = 0

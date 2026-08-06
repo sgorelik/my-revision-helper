@@ -38,6 +38,7 @@ MIGRATIONS = [
     "migrate_add_assignment_timer.py",
     "migrate_add_submission_pages.py",
     "migrate_add_work_corrections.py",
+    "migrate_redate_score_log.py",
 ]
 
 def run_migration(migration_file: str) -> bool:

@@ -40,21 +40,48 @@ import {
   theme,
 } from '../components/ui'
 
+/**
+ * Where each subject stands.
+ *
+ * Against the year group when a year average has been set, and against the
+ * child's own scores when it has not. The gap is the more useful framing, but
+ * it needs data that only comes from a school report — and falling back to an
+ * empty state meant a child with eight marked papers saw nothing at all.
+ */
 function GapChart({ progress }: { progress: ChildProgress }) {
-  const data = useMemo(
-    () =>
-      progress.subjects
-        .filter((s) => s.baselineGap != null || s.gapToAverage != null)
-        .map((s) => ({
-          subject: s.subject.length > 12 ? `${s.subject.slice(0, 11)}…` : s.subject,
-          gap: s.gapToAverage ?? s.baselineGap ?? 0,
-        }))
-        .sort((a, b) => a.gap - b.gap),
-    [progress.subjects],
+  const comparable = progress.subjects.some(
+    (s) => s.gapToAverage != null || s.baselineGap != null,
   )
 
+  const data = useMemo(() => {
+    const short = (name: string) => (name.length > 12 ? `${name.slice(0, 11)}…` : name)
+
+    if (comparable) {
+      return progress.subjects
+        .filter((s) => s.baselineGap != null || s.gapToAverage != null)
+        .map((s) => ({ subject: short(s.subject), value: s.gapToAverage ?? s.baselineGap ?? 0 }))
+        .sort((a, b) => a.value - b.value)
+    }
+
+    return progress.subjects
+      .filter((s) => s.averageScore != null)
+      .map((s) => ({ subject: short(s.subject), value: s.averageScore as number }))
+      .sort((a, b) => a.value - b.value)
+  }, [progress.subjects, comparable])
+
   if (data.length === 0) {
-    return <EmptyState icon="📊" title="No baseline scores yet" body="Import a tracker or add scores to see the gap." />
+    return (
+      <EmptyState
+        icon="📊"
+        title="No scores yet"
+        body="Hand in some marked work and each subject will show up here."
+      />
+    )
+  }
+
+  const colour = (value: number) => {
+    if (comparable) return value >= 0 ? '#10b981' : value >= -10 ? '#f59e0b' : '#f43f5e'
+    return value >= 70 ? '#10b981' : value >= 50 ? '#f59e0b' : '#f43f5e'
   }
 
   return (
@@ -62,21 +89,20 @@ function GapChart({ progress }: { progress: ChildProgress }) {
       <BarChart data={data} margin={{ top: 8, right: 8, left: -20, bottom: 8 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
         <XAxis dataKey="subject" tick={{ fontSize: 11 }} interval={0} angle={-25} textAnchor="end" height={60} />
-        <YAxis tick={{ fontSize: 11 }} unit="" />
+        <YAxis tick={{ fontSize: 11 }} domain={comparable ? undefined : [0, 100]} />
         <Tooltip
           formatter={(value) => {
             const points = Number(value)
-            return [`${points > 0 ? '+' : ''}${points} points`, 'vs year average']
+            return comparable
+              ? [`${points > 0 ? '+' : ''}${points} points`, 'vs year average']
+              : [`${Math.round(points)}%`, 'average so far']
           }}
           contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', fontSize: 12 }}
         />
-        <ReferenceLine y={0} stroke="#0f172a" strokeWidth={1.5} />
-        <Bar dataKey="gap" radius={[4, 4, 4, 4]}>
+        {comparable && <ReferenceLine y={0} stroke="#0f172a" strokeWidth={1.5} />}
+        <Bar dataKey="value" radius={[4, 4, 4, 4]}>
           {data.map((entry) => (
-            <Cell
-              key={entry.subject}
-              fill={entry.gap >= 0 ? '#10b981' : entry.gap >= -10 ? '#f59e0b' : '#f43f5e'}
-            />
+            <Cell key={entry.subject} fill={colour(entry.value)} />
           ))}
         </Bar>
       </BarChart>
@@ -314,6 +340,9 @@ export default function DashboardPage() {
 
   const { child } = progress
   const accent = theme(child.colour)
+  // Year averages come off a school report, so plenty of children never have
+  // them. Where they are missing the charts compare against nothing instead.
+  const hasYearAverages = progress.subjects.some((s) => s.yearAverage != null)
   const behind = progress.subjects.filter(
     (s) => (s.gapToAverage ?? s.baselineGap ?? 0) < 0,
   ).length
@@ -404,15 +433,26 @@ export default function DashboardPage() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
+          {/* Both headings follow the chart, which switches to plain averages
+              when no year averages have been entered. */}
           <SectionTitle
-            title="Gap to year average"
-            subtitle="Negative means behind the year group"
+            title={hasYearAverages ? 'Gap to year average' : 'Average by subject'}
+            subtitle={
+              hasYearAverages
+                ? 'Negative means behind the year group'
+                : 'Across everything marked so far'
+            }
           />
           <GapChart progress={progress} />
         </Card>
 
         <Card>
-          <SectionTitle title="Scores over time" subtitle="Each result against the year average" />
+          <SectionTitle
+            title="Scores over time"
+            subtitle={
+              hasYearAverages ? 'Each result against the year average' : 'Every result, in order'
+            }
+          />
           <ScoreTrend progress={progress} />
         </Card>
       </div>

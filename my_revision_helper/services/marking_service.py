@@ -533,12 +533,18 @@ def persist_marking(
     result: MarkingResult,
     marked_by: str = "ai",
     langfuse_trace_id: Optional[str] = None,
+    occurred_at: Optional[datetime] = None,
 ) -> Marking:
     """
     Save a marking result and roll it into the child's progress data.
 
     Writes the marking and its per-question detail, updates topic mastery, and
     adds a score-log entry so the result appears on the progress chart.
+
+    occurred_at is the day the child did the work, which is what the chart is
+    plotted against. It differs from now whenever a week of paper worksheets is
+    caught up on in one sitting — without it a term's work stacks on the day it
+    was typed in and the trend line says nothing.
     """
     marking = Marking(
         id=str(uuid.uuid4()),
@@ -593,7 +599,7 @@ def persist_marking(
                 year_average_pct=_year_average(db, submission.child_id, subject),
                 source="marking",
                 marking_id=marking.id,
-                recorded_at=datetime.utcnow(),
+                recorded_at=occurred_at or submission.submitted_at or datetime.utcnow(),
             )
         )
 

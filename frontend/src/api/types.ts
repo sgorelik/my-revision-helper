@@ -299,6 +299,8 @@ export interface SubjectProgress {
   yearAverage?: number | null
   targetScore?: number | null
   latestScore?: number | null
+  averageScore?: number | null
+  markedCount: number
   gapToAverage?: number | null
   baselineGap?: number | null
   weeklyMinutes: number

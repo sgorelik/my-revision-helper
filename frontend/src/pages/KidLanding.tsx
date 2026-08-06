@@ -11,6 +11,7 @@ import { Link, useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { Assignment, ChildProgress, Today } from '../api/types'
 import HandInForm from '../components/HandInForm'
+import { SummerProgress } from '../components/SummerProgress'
 import {
   Button,
   Card,
@@ -248,6 +249,9 @@ export default function KidLanding() {
 
       {today && <TodayPanel today={today} />}
 
+      {/* Seeing the line move is the whole reward for a summer of worksheets. */}
+      <SummerProgress progress={progress} />
+
       {/* Work done away from the app still counts, and still gets marked. */}
       <section>
         {handingIn ? (
@@ -312,13 +316,24 @@ export default function KidLanding() {
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Subjects */}
         <section>
-          <SectionTitle title="Your subjects" subtitle="How you're tracking against your year group" />
+          <SectionTitle
+            title="Your subjects"
+            subtitle={
+              progress.subjects.some((s) => s.yearAverage != null)
+                ? "How you're tracking against your year group"
+                : 'Your average in each one'
+            }
+          />
           {progress.subjects.length === 0 ? (
-            <EmptyState icon="📚" title="No subjects set up yet" />
+            <EmptyState
+              icon="📚"
+              title="No subjects yet"
+              body="They appear here once you have handed in some work."
+            />
           ) : (
             <div className="space-y-2">
               {progress.subjects.map((subject) => {
-                const score = subject.latestScore ?? subject.baselineScore
+                const score = subject.averageScore ?? subject.latestScore ?? subject.baselineScore
                 const gap = subject.gapToAverage ?? subject.baselineGap
                 return (
                   <Card key={subject.subject} className="!p-4">
@@ -339,22 +354,27 @@ export default function KidLanding() {
                           </span>
                         </div>
                         <div className="mt-1.5">
+                          {/* The score itself, where there is one. Filling the
+                              bar with work-completed made every subject look
+                              finished regardless of how it went. */}
                           <ProgressBar
-                            value={subject.assignmentsDone}
-                            max={Math.max(1, subject.assignmentsTotal)}
+                            value={score ?? subject.assignmentsDone}
+                            max={score != null ? 100 : Math.max(1, subject.assignmentsTotal)}
                             className={
-                              gap == null
+                              score == null
                                 ? 'bg-slate-400'
-                                : gap >= 0
+                                : score >= 70
                                   ? 'bg-emerald-500'
-                                  : gap >= -10
+                                  : score >= 50
                                     ? 'bg-amber-500'
                                     : 'bg-rose-500'
                             }
                           />
                         </div>
                         <div className="mt-1 text-xs text-slate-500">
-                          {subject.assignmentsDone}/{subject.assignmentsTotal} done
+                          {subject.markedCount > 0
+                            ? `${subject.markedCount} marked`
+                            : `${subject.assignmentsDone}/${subject.assignmentsTotal} done`}
                           {gap != null && (
                             <span className={gap >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
                               {' '}

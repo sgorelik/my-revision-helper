@@ -226,45 +226,73 @@ async def get_child_progress(
         if row.status == "weak":
             weak_by_subject.setdefault(row.subject, []).append(row.topic)
 
+    # Every subject the child has actually touched, not only the ones somebody
+    # set up. Work fed in from a script or a scan creates no configuration row,
+    # and a subject with eight marked papers behind it should not be invisible
+    # just because nobody typed a baseline for it.
+    configured = {row.subject: row for row in subject_rows}
+    seen = set(configured)
+    seen.update(a.subject for a in assignments if a.subject)
+    seen.update(m.subject for m in markings if m.subject)
+    seen.update(e.subject for e in score_entries if e.subject)
+
+    # Work the marker could not read is not work the child failed, so it waits
+    # for a person rather than being averaged in as a zero.
+    countable = [m for m in markings if counts_towards_average(m)]
+
+    scores_by_subject: Dict[str, List[float]] = {}
+    for marking in countable:
+        scores_by_subject.setdefault(marking.subject, []).append(marking.percentage)
+
     subject_progress: List[SubjectProgressResponse] = []
-    for row in subject_rows:
-        subject_assignments = [a for a in assignments if a.subject == row.subject]
+    for name in seen:
+        row = configured.get(name)
+        subject_assignments = [a for a in assignments if a.subject == name]
         done = [a for a in subject_assignments if a.status in FINISHED_STATUSES]
-        latest = latest_score_by_subject.get(row.subject)
+        latest = latest_score_by_subject.get(name)
+        year_average = row.year_average if row else None
+        baseline = row.baseline_score if row else None
+        scores = scores_by_subject.get(name, [])
 
         subject_progress.append(
             SubjectProgressResponse(
-                subject=row.subject,
-                baselineScore=row.baseline_score,
-                yearAverage=row.year_average,
-                targetScore=row.target_score,
+                subject=name,
+                baselineScore=baseline,
+                yearAverage=year_average,
+                targetScore=row.target_score if row else None,
                 latestScore=latest,
+                averageScore=(round(sum(scores) / len(scores), 1) if scores else None),
+                markedCount=len(scores),
                 gapToAverage=(
-                    round(latest - row.year_average, 1)
-                    if latest is not None and row.year_average is not None
+                    round(latest - year_average, 1)
+                    if latest is not None and year_average is not None
                     else None
                 ),
                 baselineGap=(
-                    round(row.baseline_score - row.year_average, 1)
-                    if row.baseline_score is not None and row.year_average is not None
+                    round(baseline - year_average, 1)
+                    if baseline is not None and year_average is not None
                     else None
                 ),
-                weeklyMinutes=row.weekly_minutes or 0,
+                weeklyMinutes=(row.weekly_minutes or 0) if row else 0,
                 assignmentsTotal=len(subject_assignments),
                 assignmentsDone=len(done),
-                minutesLogged=minutes_by_subject.get(row.subject, 0),
-                weakTopics=weak_by_subject.get(row.subject, [])[:5],
+                minutesLogged=minutes_by_subject.get(name, 0),
+                weakTopics=weak_by_subject.get(name, [])[:5],
             )
         )
 
-    # Worst gap first, matching how the plan prioritises time.
-    subject_progress.sort(
-        key=lambda s: (
-            s.gapToAverage
-            if s.gapToAverage is not None
-            else (s.baselineGap if s.baselineGap is not None else 999)
-        )
-    )
+    # Worst first, matching how the plan prioritises time. Where no year average
+    # has been set there is no gap to sort on, so the score itself decides;
+    # subjects with nothing marked go last rather than looking like zeroes.
+    def worst_first(s: SubjectProgressResponse):
+        gap = s.gapToAverage if s.gapToAverage is not None else s.baselineGap
+        if gap is not None:
+            return (0, gap, s.subject)
+        if s.averageScore is not None:
+            return (1, s.averageScore, s.subject)
+        return (2, 0.0, s.subject)
+
+    subject_progress.sort(key=worst_first)
 
     outstanding = [a for a in assignments if a.status not in FINISHED_STATUSES]
     outstanding.sort(key=lambda a: (a.due_date is None, a.due_date or datetime.max, a.sort_order or 0))
@@ -279,9 +307,6 @@ async def get_child_progress(
     today = local_today()
     overdue = [a for a in outstanding if a.due_date and a.due_date.date() < today]
 
-    # Work the marker could not read is not work the child failed, so it waits
-    # for a person rather than being averaged in as a zero.
-    countable = [m for m in markings if counts_towards_average(m)]
     percentages = [m.percentage for m in countable]
     needing_review = [m for m in markings if m.status == NEEDS_REVIEW]
 
