@@ -251,6 +251,7 @@ def hand_in_work(
     marks_available: Optional[float] = None,
     note: str = "",
     save_to_library: bool = True,
+    paper: str = "",
 ) -> str:
     """
     Hand in work that was never assigned, and have it marked.
@@ -259,10 +260,15 @@ def hand_in_work(
     in class. An assignment and a completion are created after the fact, dated
     to done_on (an ISO date, defaulting to today) so it counts in the right week.
 
-    Send a scan in paths and it is marked question by question — this works
-    without the original paper as long as the questions are visible next to the
-    answers. The blank worksheet is then kept in the library for the other
-    child, with the answers stripped out, unless save_to_library is false.
+    Send a scan in paths and it is marked question by question. Questions and
+    answers on the same page work as they are. When the answers are on a
+    separate numbered sheet, either include the question pages earlier in the
+    same upload, or pass paper (an id or title from the library) so the
+    numbered answers are matched to that paper's questions.
+
+    The blank worksheet is kept in the library for the other child, with the
+    answers stripped out, unless save_to_library is false or a library paper
+    was linked (in which case that paper is reused instead).
 
     Send no files to record work you are not scanning. Give marks_awarded and
     marks_available if you marked it yourself, and that score is used as it
@@ -275,6 +281,13 @@ def hand_in_work(
         found = _resolve_child(api, child)
     except Exception as e:
         return _fail(e)
+
+    paper_id = None
+    if paper.strip():
+        try:
+            paper_id = _resolve_paper(api, paper)["id"]
+        except Exception as e:
+            return _fail(e)
 
     collected = collect_files(paths or [], limit=MAX_FILES_PER_CALL)
     if paths and collected.is_empty:
@@ -291,7 +304,8 @@ def hand_in_work(
             minutes_spent=minutes_spent,
             marks_awarded=marks_awarded,
             marks_available=marks_available,
-            save_to_library=save_to_library,
+            save_to_library=save_to_library and paper_id is None,
+            paper_id=paper_id,
         )
     except Exception as e:
         return _fail(e)
@@ -302,11 +316,18 @@ def hand_in_work(
     if marking:
         awarded, available = marking.get("marksAwarded"), marking.get("marksAvailable")
         percentage = marking.get("percentage")
-        lines.append(
-            f"Marked {awarded}/{available}"
-            + (f" ({percentage}%)" if percentage is not None else "")
-            + (" by you" if marking.get("markedBy") == "parent" else " by the app")
-        )
+        status = marking.get("status")
+        if status == "needs_review":
+            lines.append(
+                "Needs a look before it counts: "
+                + (marking.get("reviewReason") or "marking was unsure")
+            )
+        else:
+            lines.append(
+                f"Marked {awarded}/{available}"
+                + (f" ({percentage}%)" if percentage is not None else "")
+                + (" by you" if marking.get("markedBy") == "parent" else " by the app")
+            )
         weak = marking.get("weakTopics") or []
         if weak:
             lines.append(f"Weak topics: {', '.join(weak[:8])}")
@@ -317,6 +338,10 @@ def hand_in_work(
         lines.append(
             f"Kept the blank worksheet in the library ({result.get('questionCount')} questions), "
             "answers stripped out."
+        )
+    elif paper_id and result.get("paperId"):
+        lines.append(
+            f"Marked against the linked library paper ({result.get('questionCount')} questions)."
         )
 
     return "\n".join(lines) + describe_skipped(collected)

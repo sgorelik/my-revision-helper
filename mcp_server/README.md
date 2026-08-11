@@ -179,10 +179,12 @@ as it lands, and marking a scan means reading each page. A 15 page paper takes
 several minutes. Twelve files is the most one call will take; ask again for the
 rest.
 
-**A scan of completed work does not need the original paper.** As long as the
-questions are visible next to the answers, it can be marked from the scan
-alone, and the blank worksheet is kept in the library for your other child with
-the answers stripped out.
+**A scan of completed work does not always need the original paper.** Questions
+and answers on the same page are marked from the scan alone, and the blank
+worksheet is kept in the library. When the answers sit on a separate numbered
+sheet, either include the question pages earlier in the same upload, or pass
+`paper` (an id or title from `list_papers`) so the numbered answers are matched
+to that paper's questions.
 
 **Files never go through the model.** The server reads them from disk and posts
 them straight to the app. Claude only ever sees the paths and the summary that

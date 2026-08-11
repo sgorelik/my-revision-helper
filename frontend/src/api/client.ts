@@ -416,6 +416,8 @@ export const api = {
     marksAwarded?: number
     marksAvailable?: number
     saveToLibrary?: boolean
+    /** Link to a library paper when the scan is answers-only. */
+    paperId?: string
     files?: File[]
   }) => {
     const form = new FormData()
@@ -429,6 +431,7 @@ export const api = {
     if (payload.marksAwarded != null) form.append('marksAwarded', String(payload.marksAwarded))
     if (payload.marksAvailable != null) form.append('marksAvailable', String(payload.marksAvailable))
     if (payload.saveToLibrary != null) form.append('saveToLibrary', String(payload.saveToLibrary))
+    if (payload.paperId) form.append('paperId', payload.paperId)
     ;(payload.files || []).forEach((file) => form.append('files', file))
     return upload<HandIn>('/handins', form)
   },

@@ -463,6 +463,42 @@ class TestHandingWorkIn:
         assert "percentages" in out
         assert "12 questions" in out
 
+    def test_an_answer_sheet_can_be_linked_to_a_library_paper(self, stub, tmp_path):
+        from mcp_server.server import hand_in_work
+
+        answers = tmp_path / "answers.txt"
+        answers.write_text("1. 45\n2. 92\n")
+        api = stub(
+            StubApi(
+                papers=[{"id": "p1", "title": "Fractions worksheet", "subject": "Mathematics"}],
+                handin={
+                    "title": "Fractions worksheet",
+                    "paperId": "p1",
+                    "savedToLibrary": False,
+                    "questionCount": 12,
+                    "marking": {
+                        "marksAwarded": 10,
+                        "marksAvailable": 12,
+                        "percentage": 83.3,
+                        "markedBy": "ai",
+                        "status": "marked",
+                        "weakTopics": [],
+                    },
+                },
+            )
+        )
+        out = hand_in_work(
+            "Yuri",
+            "Mathematics",
+            paths=[str(answers)],
+            paper="Fractions worksheet",
+        )
+
+        assert "linked library paper" in out
+        assert api.calls[0][0] == "handin"
+        assert api.calls[0][1]["paper_id"] == "p1"
+        assert api.calls[0][1]["save_to_library"] is False
+
     def test_it_says_when_you_marked_it_rather_than_the_app(self, stub):
         from mcp_server.server import hand_in_work
 

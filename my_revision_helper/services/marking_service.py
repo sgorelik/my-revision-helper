@@ -75,6 +75,10 @@ Marking rules:
   the student loses marks for thin working, so credit the working that is there.
 - "correct" = full marks. "partial" = some but not all. "incorrect" = no marks but
   an attempt was made. "not_attempted" = you cannot find any answer to this question.
+- When the student's work includes an "ANSWERS BY NUMBER" map, treat that as the
+  authoritative list of what they wrote for each question number. Match map entry
+  "3" to question "3", even when the questions themselves are not repeated next
+  to the answers (common when answers are written on a separate sheet).
 - Never award more than the marks available.
 - Accept answers that are equivalent to the key but differently worded or formatted
   (2.5 and 5/2, "increases because the outer electron is further away" and the key's

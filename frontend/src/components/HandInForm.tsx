@@ -5,13 +5,17 @@
  * set in class, a past paper worked through at the table. Either send the scan
  * and have it marked, or record that it was done and type in the score if you
  * marked it yourself.
+ *
+ * When the answers sit on a separate numbered sheet, either include the
+ * question pages earlier in the same upload, or pick the blank library paper
+ * the answers belong to.
  */
 
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { ApiError, api } from '../api/client'
-import type { HandIn } from '../api/types'
+import type { HandIn, Paper } from '../api/types'
 import { Button, Card, ErrorBanner } from './ui'
 
 const INPUT =
@@ -45,6 +49,8 @@ export default function HandInForm({
   const [awarded, setAwarded] = useState('')
   const [available, setAvailable] = useState('')
   const [saveToLibrary, setSaveToLibrary] = useState(true)
+  const [papers, setPapers] = useState<Paper[]>([])
+  const [paperId, setPaperId] = useState('')
 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -60,8 +66,22 @@ export default function HandInForm({
       .catch(() => setSubjects([]))
   }, [])
 
+  useEffect(() => {
+    if (!subject) {
+      setPapers([])
+      setPaperId('')
+      return
+    }
+    api
+      .listPapers(subject)
+      .then((list) => setPapers(list.items))
+      .catch(() => setPapers([]))
+    setPaperId('')
+  }, [subject])
+
   const hasWork = files.length > 0 || pastedText.trim().length > 0
   const hasScore = awarded.trim().length > 0
+  const linkedPaper = papers.find((p) => p.id === paperId)
 
   const submit = async () => {
     setError('')
@@ -85,14 +105,15 @@ export default function HandInForm({
       const handIn = await api.handIn({
         childId,
         subject,
-        title: title.trim(),
+        title: title.trim() || linkedPaper?.title || '',
         note: note.trim(),
         doneOn,
         minutesSpent: minutes.trim() ? Number(minutes) : undefined,
         pastedText: pastedText.trim(),
         marksAwarded: hasScore ? Number(awarded) : undefined,
         marksAvailable: hasScore ? Number(available) : undefined,
-        saveToLibrary,
+        saveToLibrary: paperId ? false : saveToLibrary,
+        paperId: paperId || undefined,
         files,
       })
 
@@ -104,6 +125,7 @@ export default function HandInForm({
       setAwarded('')
       setAvailable('')
       setMinutes('')
+      setPaperId('')
       onDone?.()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not record this work')
@@ -164,12 +186,38 @@ export default function HandInForm({
           className="block w-full cursor-pointer rounded-xl border border-slate-300 p-2 text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-sm file:text-white hover:file:bg-slate-800"
         />
         <p className="mt-1.5 text-xs text-slate-500">
-          Works best when the questions and the answers are on the same page — that is enough to
-          mark it without the original paper. Leave this empty to record work you are not scanning.
+          Questions and answers on the same page work as they are. If the answers
+          are on a separate numbered sheet, include the question pages earlier in
+          the upload, or pick the original paper below.
         </p>
       </div>
 
-      {files.length > 0 && (
+      {papers.length > 0 && (
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">
+            Original paper from the library (optional)
+          </label>
+          <select
+            value={paperId}
+            onChange={(e) => setPaperId(e.target.value)}
+            className={INPUT}
+          >
+            <option value="">Not linked — use questions on the scan</option>
+            {papers.map((paper) => (
+              <option key={paper.id} value={paper.id}>
+                {paper.title}
+                {paper.questionCount ? ` (${paper.questionCount} questions)` : ''}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-xs text-slate-500">
+            Needed when you are handing in an answer sheet alone. The numbered
+            answers are matched to this paper&apos;s questions.
+          </p>
+        </div>
+      )}
+
+      {files.length > 0 && !paperId && (
         <label className="flex items-start gap-2.5 rounded-xl border border-sky-200 bg-sky-50 p-3 text-sm">
           <input
             type="checkbox"
@@ -268,6 +316,12 @@ export default function HandInForm({
             <div className="mt-1 text-emerald-700">
               Kept in the library as a blank worksheet with {result.questionCount} question
               {result.questionCount === 1 ? '' : 's'}, ready to assign again.
+            </div>
+          )}
+          {result.paperId && !result.savedToLibrary && (
+            <div className="mt-1 text-emerald-700">
+              Marked against the linked library paper
+              {result.questionCount ? ` (${result.questionCount} questions)` : ''}.
             </div>
           )}
           {result.marking ? (

@@ -32,6 +32,7 @@ from ..schemas.study import (
 )
 from ..services import timing
 from ..services import work as work_service
+from ..services.answer_alignment import prepare_work_for_marking
 from ..services.file_store import FileTooLargeError, get_file, store_uploads
 from ..services.page_images import load_page_images, store_page_images
 from ..services.marking_service import (
@@ -168,6 +169,11 @@ async def submit_assignment(
 
     student_work = "\n\n".join(text_parts).strip()
     unreadable = not student_work
+    # Numbered answers on a later sheet are matched to the assigned paper's
+    # questions by number, rather than hunting through the whole transcript.
+    marking_text, _ = (
+        prepare_work_for_marking(student_work) if student_work else (student_work, None)
+    )
 
     # Handing in ends the sitting, whether or not "finish" was pressed.
     if assignment.timer_state in (timing.RUNNING, timing.PAUSED):
@@ -220,7 +226,7 @@ async def submit_assignment(
             if questions:
                 result = mark_per_question(
                     questions,
-                    student_work,
+                    marking_text,
                     subject=assignment.subject,
                     client=openai_client,
                     model=model,
@@ -229,7 +235,7 @@ async def submit_assignment(
                 )
             else:
                 result = mark_holistically(
-                    student_work,
+                    marking_text,
                     subject=assignment.subject,
                     year_group=child.year_group if child else None,
                     client=openai_client,

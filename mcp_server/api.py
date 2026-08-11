@@ -138,6 +138,7 @@ class RevisionHelper:
         marks_awarded: Optional[float] = None,
         marks_available: Optional[float] = None,
         save_to_library: bool = True,
+        paper_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Record work that was never assigned, and mark it if it can be."""
         data: Dict[str, Any] = {
@@ -154,6 +155,8 @@ class RevisionHelper:
             data["marksAwarded"] = marks_awarded
         if marks_available is not None:
             data["marksAvailable"] = marks_available
+        if paper_id:
+            data["paperId"] = paper_id
 
         return self._request(
             "POST", "/handins", files=self._as_uploads(files) or None, data=data

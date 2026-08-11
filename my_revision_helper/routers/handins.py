@@ -7,12 +7,15 @@ through at the kitchen table. This records that after the fact, in one request,
 rather than making the parent build an assignment first and then hand in against
 it.
 
-Two shapes of hand-in:
+Three shapes of hand-in:
 
-With a scan, where the questions and the child's answers sit side by side on the
-page. The transcription marks which words the child wrote, so taking those out
-leaves the blank paper, which goes into the library ready for the other child and
-gives the marker its questions.
+With a scan where the questions and the child's answers sit side by side. The
+transcription marks which words the child wrote, so taking those out leaves the
+blank paper, which goes into the library and gives the marker its questions.
+
+With a scan where the answers are on a separate numbered sheet. The questions
+come from earlier pages of the same scan, or from a library paper the hand-in
+is linked to; the numbered answers are matched to those questions by number.
 
 Without a scan, for work done on paper that nobody wants to photograph. Nothing
 can be marked, but the work still happened, and a score the parent already knows
@@ -38,6 +41,10 @@ from ..llm import get_openai_client, get_reasoning_model
 from ..models_db import Assignment, Child, Paper, PaperQuestion, Submission
 from ..schemas.study import HandInResponse
 from ..services import work as work_service
+from ..services.answer_alignment import (
+    prepare_work_for_marking,
+    questions_text_for_library,
+)
 from ..services.file_store import FileTooLargeError, store_uploads
 from ..services.marking_service import (
     MarkingResult,
@@ -48,7 +55,13 @@ from ..services.marking_service import (
 )
 from ..services.page_images import load_page_images, store_page_images
 from ..services.paper_parser import guess_title, parse_paper
-from ..services.scope import build_scope, ensure_user_row, get_owned_child, owner_columns
+from ..services.scope import (
+    build_scope,
+    ensure_user_row,
+    get_owned_child,
+    owner_columns,
+    restrict_to_owner,
+)
 from ..services.student_writing import (
     has_student_writing,
     looks_self_contained,
@@ -130,6 +143,15 @@ def _record_assignment(
     )
 
 
+def _owned_paper(db: Session, paper_id: str, scope) -> Optional[Paper]:
+    """A library paper that belongs to this parent, or None."""
+    if not paper_id:
+        return None
+    return restrict_to_owner(
+        db.query(Paper).filter(Paper.id == paper_id), Paper, scope
+    ).first()
+
+
 async def _paper_from_completed_work(
     db: Session,
     scope,
@@ -142,15 +164,39 @@ async def _paper_from_completed_work(
     """
     The blank paper behind a completed scan, saved for re-use.
 
+    Uses the question pages alone when the answers sat on a later sheet, so the
+    library copy is a worksheet rather than a half-empty answer list.
+
     Returns None when the scan cannot give one up: a page of bare answers with no
     questions on it, or a transcription that never marked the handwriting, in
     which case stripping would leave the child's answers in the library copy.
     """
-    if not has_student_writing(tagged_text) or not looks_self_contained(tagged_text):
+    _, parts = prepare_work_for_marking(tagged_text)
+    source = questions_text_for_library(parts, tagged_text)
+
+    # An answer-only sheet has nothing to put in the library; the questions have
+    # to come from a linked paper instead.
+    if not looks_self_contained(source):
         logger.info("Hand-in does not carry its own questions; marking it as a whole")
         return None
 
-    printed = strip_student_writing(tagged_text)
+    # Prefer stripping handwriting when the OCR tagged it. Without the tags —
+    # rare for scans, common for typed pastes of question pages — the source is
+    # already clean enough to parse, but only if it is not mostly handwriting
+    # that went untagged (in which case we would put the child's answers into
+    # the library).
+    if has_student_writing(source):
+        printed = strip_student_writing(source)
+    elif looks_self_contained(source):
+        printed = source
+    else:
+        logger.info("Hand-in handwriting was not tagged; refusing to keep it as a paper")
+        return None
+
+    if not looks_self_contained(printed):
+        logger.info("No questions left after stripping; marking it as a whole")
+        return None
+
     openai_client = get_openai_client()
 
     parsed = parse_paper(
@@ -237,6 +283,7 @@ async def hand_in_unassigned_work(
     marksAwarded: Optional[float] = Form(None),
     marksAvailable: Optional[float] = Form(None),
     saveToLibrary: bool = Form(True),
+    paperId: str = Form(""),
     files: List[UploadFile] = File(default_factory=list),
     user: Optional[Dict[str, str]] = Depends(get_current_user_optional),
     db: Optional[Session] = Depends(get_db),
@@ -245,9 +292,11 @@ async def hand_in_unassigned_work(
     """
     Record work that was never assigned, and mark it if there is something to mark.
 
-    Send a scan (or typed answers) to have it marked question by question. Send
-    no work at all to record that it was done, optionally with the score you
-    already know.
+    Send a scan (or typed answers) to have it marked question by question. When
+    the answers sit on a separate numbered sheet, either include the question
+    pages earlier in the same upload, or pass paperId to point at the blank
+    library paper the answers belong to. Send no work at all to record that it
+    was done, optionally with the score you already know.
     """
     db = _require_db(db)
     scope = build_scope(user, session_id)
@@ -260,6 +309,12 @@ async def hand_in_unassigned_work(
     subject = normalise_subject(subject)
     if not subject:
         raise HTTPException(status_code=400, detail="A subject is needed")
+
+    linked_paper = None
+    if paperId.strip():
+        linked_paper = _owned_paper(db, paperId.strip(), scope)
+        if not linked_paper:
+            raise HTTPException(status_code=404, detail="Paper not found")
 
     if marksAwarded is not None and not marksAvailable:
         raise HTTPException(
@@ -285,13 +340,14 @@ async def hand_in_unassigned_work(
             db,
             scope,
             child=child,
-            title=title.strip() or _fallback_title(subject, done_on),
+            title=title.strip() or (linked_paper.title if linked_paper else "") or _fallback_title(subject, done_on),
             subject=subject,
             done_on=done_on,
             minutes=minutesSpent,
             note=note,
             marks_awarded=marksAwarded,
             marks_available=marksAvailable,
+            paper=linked_paper,
         )
 
     return await _record_with_work(
@@ -307,7 +363,8 @@ async def hand_in_unassigned_work(
         note=note,
         pasted_text=pastedText,
         files=files,
-        save_to_library=saveToLibrary,
+        save_to_library=saveToLibrary and linked_paper is None,
+        linked_paper=linked_paper,
         marks_awarded=marksAwarded,
         marks_available=marksAvailable,
     )
@@ -325,6 +382,7 @@ def _record_without_work(
     note: str,
     marks_awarded: Optional[float],
     marks_available: Optional[float],
+    paper: Optional[Paper] = None,
 ) -> HandInResponse:
     """Work done on paper and never scanned: record that it happened."""
     from .submissions import _marking_response
@@ -335,7 +393,7 @@ def _record_without_work(
         child=child,
         title=title,
         subject=subject,
-        paper=None,
+        paper=paper,
         done_on=done_on,
         minutes=minutes,
         instructions=None,
@@ -366,13 +424,14 @@ def _record_without_work(
             childId=child.id,
             subject=subject,
             title=title,
+            paperId=paper.id if paper else None,
         )
 
     marking = persist_marking(
         db,
         submission=submission,
         subject=subject,
-        paper_id=None,
+        paper_id=paper.id if paper else None,
         result=_manual_result(
             marks_awarded=marks_awarded,
             marks_available=marks_available or 0,
@@ -389,6 +448,7 @@ def _record_without_work(
         childId=child.id,
         subject=subject,
         title=title,
+        paperId=paper.id if paper else None,
         marking=_marking_response(db, marking),
     )
 
@@ -406,6 +466,7 @@ async def _record_with_work(
     pasted_text: str,
     files: List[UploadFile],
     save_to_library: bool,
+    linked_paper: Optional[Paper],
     marks_awarded: Optional[float],
     marks_available: Optional[float],
 ) -> HandInResponse:
@@ -439,8 +500,20 @@ async def _record_with_work(
     student_work = "\n\n".join(text_parts).strip()
     unreadable = not student_work
 
-    paper = None
-    if save_to_library and not unreadable:
+    # Numbered answers on a later sheet are matched to questions by number.
+    # Doing this before choosing the paper means the question pages alone can
+    # become the library copy, and the marker gets an explicit answer map.
+    marking_text, parts = (
+        prepare_work_for_marking(student_work) if student_work else (student_work, None)
+    )
+
+    # A linked library paper wins: it already has the questions (and usually an
+    # answer key). Otherwise try to build one from the question pages of the
+    # scan — including the case where those pages came earlier and the answers
+    # sat on a separate sheet.
+    paper = linked_paper
+    saved_to_library = False
+    if paper is None and save_to_library and not unreadable:
         paper = await _paper_from_completed_work(
             db,
             scope,
@@ -449,10 +522,15 @@ async def _record_with_work(
             subject=subject,
             file_ids=file_ids,
         )
+        saved_to_library = paper is not None
 
     # What the paper turned out to be called beats a date stamp, so the record
     # reads "Level 2 Calculator Paper" rather than "Mathematics work, 31 Jul".
-    title = title or (paper.title if paper else "") or _fallback_title(subject, done_on)
+    title = (
+        title
+        or (paper.title if paper else "")
+        or _fallback_title(subject, done_on)
+    )
 
     assignment = _record_assignment(
         db,
@@ -487,6 +565,8 @@ async def _record_with_work(
     db.commit()
     db.refresh(submission)
 
+    questions = load_paper_questions(db, paper.id) if paper else []
+
     def reply(marking) -> HandInResponse:
         return HandInResponse(
             assignmentId=assignment.id,
@@ -495,8 +575,8 @@ async def _record_with_work(
             subject=subject,
             title=title,
             paperId=paper.id if paper else None,
-            savedToLibrary=paper is not None,
-            questionCount=len(load_paper_questions(db, paper.id)) if paper else 0,
+            savedToLibrary=saved_to_library,
+            questionCount=len(questions),
             marking=_marking_response(db, marking),
         )
 
@@ -518,7 +598,6 @@ async def _record_with_work(
         db.commit()
         return reply(marking)
 
-    questions = load_paper_questions(db, paper.id) if paper else []
     model = get_reasoning_model()
 
     # A score the app cannot stand behind is worse than no score: it lands in
@@ -539,15 +618,23 @@ async def _record_with_work(
             if questions:
                 result = mark_per_question(
                     questions,
-                    student_work,
+                    marking_text,
                     subject=subject,
                     client=openai_client,
                     model=model,
                     pages=load_page_images(db, page_image_ids),
                 )
+            elif parts and parts.numbered and not paper:
+                # Numbered answers with nowhere to match them: park for review
+                # rather than holistic-guessing against nothing.
+                reason = (
+                    "This looks like an answer sheet, but there is no paper to "
+                    "match the numbers to. Link the original worksheet from the "
+                    "library, or enter the mark yourself."
+                )
             else:
                 result = mark_holistically(
-                    student_work,
+                    marking_text,
                     subject=subject,
                     year_group=child.year_group,
                     client=openai_client,
@@ -557,7 +644,8 @@ async def _record_with_work(
             logger.error(f"Marking failed for hand-in {submission.id}: {e}", exc_info=True)
             reason = f"Marking could not be completed: {e}"
         else:
-            reason = work_service.unbelievable(result)
+            if result is not None:
+                reason = work_service.unbelievable(result)
 
     if reason:
         marking = work_service.record_unmarked(
