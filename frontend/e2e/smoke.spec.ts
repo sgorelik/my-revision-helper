@@ -55,13 +55,16 @@ test.describe('Revision Helper - Smoke Tests', () => {
     // Check that the page loaded - look for logo or any visible content
     const logo = page.getByRole('img', { name: /Calculator Logo/i }).first();
     await expect(logo).toBeVisible({ timeout: 10000 });
-    
+
+    // Verify the welcome heading is displayed on the homepage
+    await expect(page.getByRole('heading', { name: /Welcome to AI Revision Helper/i })).toBeVisible({ timeout: 5000 });
+
     // Navigate to create page
     await navigateToCreateForm(page);
-    
+
     // Check that the setup form is visible
     await expect(page.getByRole('heading', { name: /Create New Revision/i })).toBeVisible({ timeout: 5000 });
-    
+
     // Check that key form fields are present
     await expect(page.getByLabel(/Revision Name/i)).toBeVisible({ timeout: 5000 });
     await expect(page.getByLabel(/Subject/i)).toBeVisible({ timeout: 5000 });
