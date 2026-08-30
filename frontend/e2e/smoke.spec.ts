@@ -216,6 +216,51 @@ test.describe('Revision Helper - Smoke Tests', () => {
     await expect(page.getByRole('heading', { name: /Create New Revision/i })).toBeVisible();
   });
 
+  test('should clear history and return to home when clicking Clear History during a run', async ({ page }) => {
+    // Navigate to create page
+    await navigateToCreateForm(page);
+
+    // Create a revision
+    await page.getByLabel(/Revision Name/i).fill('Clear History Test');
+
+    // Select subject
+    const subjectButton = page.getByRole('button', { name: /Select a subject/i }).or(page.getByRole('button').filter({ hasText: /Subject/i })).first();
+    await subjectButton.click();
+    await page.waitForTimeout(300);
+    await page.getByRole('option').first().click();
+
+    await page.getByLabel(/Description/i).fill('Test clear history button');
+
+    // Set question count if visible
+    const questionCountField = page.getByLabel(/Desired Number of Questions/i);
+    if (await questionCountField.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await questionCountField.fill('2');
+    }
+
+    await page.getByRole('button', { name: /Create Revision/i }).click();
+
+    // Wait for the question to appear
+    await expect(
+      page.getByRole('heading', { name: /Question/i }).or(page.getByText(/Hang on!/i))
+    ).toBeVisible({ timeout: 15000 });
+
+    // Wait for actual question if loading
+    if (await page.getByText(/Hang on!/i).isVisible({ timeout: 2000 }).catch(() => false)) {
+      await expect(page.getByRole('heading', { name: /Question/i })).toBeVisible({ timeout: 30000 });
+    }
+
+    // Now click the "Clear History" button
+    const clearHistoryButton = page.getByRole('button', { name: /Clear History/i });
+    await expect(clearHistoryButton).toBeVisible({ timeout: 5000 });
+    await clearHistoryButton.click();
+
+    // Verify we're back on the home page with the revisions list
+    await expect(page.getByRole('heading', { name: /Revisions/i })).toBeVisible({ timeout: 10000 });
+
+    // The question should no longer be visible
+    await expect(page.getByRole('heading', { name: /Question/i })).not.toBeVisible({ timeout: 3000 });
+  });
+
   test('should navigate through revision workflow', async ({ page }) => {
     // Navigate to create page
     await navigateToCreateForm(page);
