@@ -1064,6 +1064,11 @@ function App() {
       {/* Revision Lists View (Homepage) */}
       {currentPage === 'home' && showRevisionList && !revision && !summary && (
         <div className="space-y-6">
+          {/* Landing Page Heading */}
+          <h1 className="text-3xl font-bold text-gray-900 text-center">
+            Welcome to AI Revision Helper: Transform Your Study Materials into Interactive Quizzes.
+          </h1>
+
           {/* Check my Prep Card */}
           <Card className="border border-gray-200 shadow-sm bg-gradient-to-r from-cyan-50 to-orange-50">
             <CardBody className="p-6">
