@@ -594,6 +594,12 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/hello")
+async def hello():
+    """Hello World endpoint. Returns a JSON greeting."""
+    return {"message": "Hello World"}
+
+
 @app.get("/api/subjects")
 async def get_subjects():
     """Get list of valid subjects."""
