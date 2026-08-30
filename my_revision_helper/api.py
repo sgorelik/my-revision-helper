@@ -588,6 +588,12 @@ VALID_SUBJECTS = CANONICAL_SUBJECTS
 # ---------- Endpoints used by the React frontend ----------
 
 
+@app.get("/api/hello")
+async def hello():
+    """Hello endpoint - returns a greeting message for the homepage."""
+    return {"message": "Hello World"}
+
+
 @app.get("/api/health")
 async def health():
     """Health check endpoint."""
